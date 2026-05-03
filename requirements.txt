@@ -1,0 +1,34 @@
+# Core
+numpy
+scipy
+pandas
+
+# Visualization
+matplotlib
+seaborn
+
+
+
+# Reinforcement Learning (optional but useful)
+gymnasium
+stable-baselines3
+
+torch
+tensorboard
+
+wandb
+tqdm
+
+# Utilities
+tqdm
+pyyaml
+
+# Image / Video processing
+opencv-python
+imageio
+
+# Scientific / math tools
+scikit-learn
+
+# Config & CLI
+argparse
