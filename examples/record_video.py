@@ -56,7 +56,7 @@ def record_episode(
     """
     # Import SAU khi path đã setup
     from config import AppConfig
-    from env.base_env import SARBaseEnv
+    from env_setup.base_env import SARBaseEnv
 
     # Output dir relative to project root
     out_dir_abs = os.path.join(PROJECT_ROOT, out_dir)

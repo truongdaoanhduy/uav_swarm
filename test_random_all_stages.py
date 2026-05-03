@@ -39,7 +39,7 @@ logging.basicConfig(level=logging.CRITICAL)
 
 from config import AppConfig
 from config.curriculum_config import STAGE_EASY, STAGE_MEDIUM, STAGE_HARD
-from env import SARBaseEnv
+from env_setup import SARBaseEnv
 
 
 # ══════════════════════════════════════════════════════════════════════════

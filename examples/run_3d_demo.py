@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 from config import AppConfig
 from config.curriculum_config import STAGE_EASY
-from env.base_env import SARBaseEnv
+from env_setup.base_env import SARBaseEnv
 
 
 # ═══════════════════════════════════════════════════════════════════════════

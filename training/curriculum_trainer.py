@@ -37,7 +37,7 @@ class CurriculumTrainer:
     # ─── Env Management ──────────────────────────────────────────────────────
 
     def _build_env(self):
-        from env import SARBaseEnv
+        from env_setup import SARBaseEnv
         if self.env is not None:
             try:
                 self.env.close()
