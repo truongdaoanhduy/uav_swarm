@@ -1,0 +1,331 @@
+"""
+Logic backend for SAR UAV environment.
+
+Pure Python physics simulation (CPU only).
+Moves physics logic from base_env.py into separate backend class.
+"""
+
+from __future__ import annotations
+from typing import Any
+
+import logging
+import numpy as np
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from config import AppConfig
+from core.coverage_map import CoverageMap
+from core.map_generator import MapGenerator
+from core.fleet_manager import FleetManager
+from entities.charging_station import ChargingStation
+from entities.obstacle import Debris, DangerZone
+from entities.uav import UAV, UAVState
+from entities.victim import InjuredVictim, MobileVictim
+from sensors.comm_sensor import CommSensor
+from sensors.fov_sensor import FOVSensor
+
+from .base_backend import BaseBackend
+
+# ── Logger ────────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
+
+class LogicBackend(BaseBackend):
+    """Logic-based physics backend."""
+
+    def __init__(self, cfg: AppConfig):
+        """Initialize logic backend."""
+        self.cfg = cfg
+
+        # Entities (initialized in reset)
+        self.uavs: list[UAV] = []
+        self.victims: list[InjuredVictim | MobileVictim] = []
+        self.stations: list[ChargingStation] = []
+        self.obstacles: list[Debris | DangerZone] = []
+
+        # Sub-systems
+        self._cov_map = CoverageMap(cfg)
+        self._map_gen = MapGenerator(cfg)
+        self._fleet_mgr = FleetManager(cfg)
+        self._fov_sensor = FOVSensor(cfg)
+        self._comm_sensor = CommSensor(cfg)
+
+        # Tracking
+        self._step_count = 0
+
+    # ══════════════════════════════════════════════════════════════════════
+    # RESET
+    # ══════════════════════════════════════════════════════════════════════
+
+    def reset(self, map_data: dict[str, Any]) -> None:
+        """Reset backend với map mới."""
+        # Build entities
+        self.stations = self._build_stations(map_data)
+        self.obstacles = self._build_obstacles(map_data)
+        self.victims = self._build_victims(map_data)
+        self.uavs = self._build_uavs(map_data)
+
+        # Reset sub-systems
+        self._cov_map.reset()
+        self._fleet_mgr.reset(self.uavs, self.stations)
+
+        self._step_count = 0
+
+    # ══════════════════════════════════════════════════════════════════════
+    # APPLY ACTIONS
+    # ══════════════════════════════════════════════════════════════════════
+
+    def apply_actions(self, actions: dict[int, np.ndarray]) -> None:
+        """Apply velocity commands to UAVs."""
+        for uav in self.uavs:
+            if uav.state == UAVState.ACTIVE:
+                action = actions.get(uav.id, np.zeros(3, dtype=np.float32))
+                action = np.clip(action, -1.0, 1.0).astype(np.float64)
+                uav.apply_action(action)
+
+            elif uav.state in (UAVState.RETURNING, UAVState.DEPLOYING):
+                # Auto-navigate về station/deployment
+                uav.auto_navigate()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP PHYSICS
+    # ══════════════════════════════════════════════════════════════════════
+
+    def step_physics(self) -> None:
+        """Update physics: battery, charging, collision."""
+        # Battery drain & charging
+        for uav in self.uavs:
+            if uav.state == UAVState.DISABLED:
+                continue
+
+            if uav.state == UAVState.CHARGING:
+                # Tìm station đang sạc
+                charged = False
+                for station in self.stations:
+                    if station.has_uav(uav):
+                        station.charge(uav)
+                        charged = True
+                        break
+                if not charged:
+                    # Không tìm được station → drain idle
+                    uav.update_battery(self.obstacles)
+            else:
+                uav.update_battery(self.obstacles)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP WORLD
+    # ══════════════════════════════════════════════════════════════════════
+
+    def step_world(self) -> None:
+        """Update world: victims, coverage, fleet, detection."""
+        self._step_count += 1
+
+        # ═══ DISABLE DEBUG ═══
+        # import logging
+        # logger = logging.getLogger(__name__)
+        # if self._step_count == 10:
+        #     logger.info(...)
+
+        # 1. Fleet manager step
+        self._fleet_mgr.step()
+
+        # 2. Victim movement
+        for v in self.victims:
+            v.step(self.obstacles)
+
+        # 3. Update coverage
+        for uav in self.uavs:
+            if uav.state == UAVState.DISABLED:
+                continue
+            
+            fov_r = self._fov_sensor.calculate_fov_radius(uav.pos[2])
+            self._cov_map.mark_explored(uav.pos, fov_r, self._step_count)
+
+        # 4. Victim detection
+        for uav in self.uavs:
+            if uav.state not in (UAVState.ACTIVE, UAVState.RETURNING):
+                continue
+
+            for victim in self.victims:
+                if victim.is_found:
+                    continue
+
+                if self._fov_sensor.check_detected(uav, victim, self.obstacles):
+                    victim.mark_found(self._step_count, uav.id)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # GET STATE
+    # ══════════════════════════════════════════════════════════════════════
+
+    def get_state(self) -> dict[str, Any]:
+        """Return current state của tất cả entities."""
+        return {
+            "uavs": self.uavs,
+            "victims": self.victims,
+            "stations": self.stations,
+            "obstacles": self.obstacles,
+            "coverage_map": self._cov_map,
+            "fleet_manager": self._fleet_mgr,
+        }
+
+    # ══════════════════════════════════════════════════════════════════════
+    # BUILD ENTITIES (private helpers)
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _build_stations(self, map_data: dict) -> list[ChargingStation]:
+        """Build stations từ map_data."""
+        stations = []
+        for s in map_data["stations"]:
+            station = ChargingStation(
+                station_id=s["id"],
+                pos=s["pos"],
+                cfg=self.cfg,
+            )
+            stations.append(station)
+        return stations
+
+    def _build_obstacles(self, map_data: dict) -> list[Debris | DangerZone]:
+        """
+        Build obstacles từ map_data dict (Multi-Shape Support).
+        
+        Dict format:
+            Debris/DangerZone:
+                Common: id, pos, type, shape
+                Circle: + radius, [height_3d]
+                Rectangle: + width, height_2d, rotation, [height_3d]
+                Polygon: + vertices, [height_3d]
+        """
+        obstacles = []
+
+        # ── Build Debris ──
+        for d_dict in map_data.get("debris", []):
+            shape = d_dict.get("shape", "circle")
+            
+            # Common params
+            debris_id = d_dict["id"]
+            pos       = d_dict["pos"]
+            height_3d = d_dict.get("height_3d", 10.0)
+            
+            # Shape-specific params
+            if shape == "circle":
+                debris = Debris(
+                    debris_id=debris_id,
+                    pos=pos,
+                    height_3d=height_3d,
+                    cfg=self.cfg,
+                    shape="circle",
+                    radius=d_dict["radius"],
+                )
+            
+            elif shape == "rectangle":
+                debris = Debris(
+                    debris_id=debris_id,
+                    pos=pos,
+                    height_3d=height_3d,
+                    cfg=self.cfg,
+                    shape="rectangle",
+                    width=d_dict["width"],
+                    height_2d=d_dict["height_2d"],
+                    rotation=d_dict["rotation"],
+                )
+            
+            elif shape == "polygon":
+                debris = Debris(
+                    debris_id=debris_id,
+                    pos=pos,
+                    height_3d=height_3d,
+                    cfg=self.cfg,
+                    shape="polygon",
+                    vertices=d_dict["vertices"],
+                )
+            
+            else:
+                logger.warning("Unknown debris shape: %s, skipping", shape)
+                continue
+            
+            obstacles.append(debris)
+        
+        # ── Build Danger Zones ──
+        for z_dict in map_data.get("danger_zones", []):
+            shape = z_dict.get("shape", "circle")
+            
+            # Common params
+            zone_id     = z_dict["id"]
+            pos         = z_dict["pos"]
+            danger_type = z_dict["danger_type"]
+            
+            # Shape-specific params
+            if shape == "circle":
+                zone = DangerZone(
+                    zone_id=zone_id,
+                    pos=pos,
+                    danger_type=danger_type,
+                    cfg=self.cfg,
+                    shape="circle",
+                    radius=z_dict["radius"],
+                )
+            
+            elif shape == "rectangle":
+                zone = DangerZone(
+                    zone_id=zone_id,
+                    pos=pos,
+                    danger_type=danger_type,
+                    cfg=self.cfg,
+                    shape="rectangle",
+                    width=z_dict["width"],
+                    height_2d=z_dict["height_2d"],
+                    rotation=z_dict["rotation"],
+                )
+            
+            else:
+                logger.warning("Unknown zone shape: %s, skipping", shape)
+                continue
+            
+            obstacles.append(zone)
+        
+        logger.info(
+            "Built %d obstacles (%d debris, %d danger zones)",
+            len(obstacles),
+            len(map_data.get("debris", [])),
+            len(map_data.get("danger_zones", [])),
+        )
+        
+        return obstacles
+
+    def _build_victims(
+        self, map_data: dict
+    ) -> list[InjuredVictim | MobileVictim]:
+        """Build victims từ map_data."""
+        victims = []
+        for v in map_data["victims"]:
+            victim_type = v.get("victim_type", "injured")
+            cls = MobileVictim if victim_type == "mobile" else InjuredVictim
+            
+            victim = cls(
+                victim_id=v["id"],
+                pos=v["pos"],
+                cfg=self.cfg,
+                urgency=v.get("urgency", 3.0),
+            )
+            victims.append(victim)
+        return victims
+
+    def _build_uavs(self, map_data: dict) -> list[UAV]:
+        """Build UAVs từ map_data."""
+        spawns = self._map_gen.get_uav_spawns(
+            stations=map_data["stations"],
+            n_total=self.cfg.env.n_uav,
+        )
+        
+        uavs = []
+        for s in spawns:
+            uav = UAV(
+                uav_id=s["id"],
+                pos=s["pos"],
+                cfg=self.cfg,
+                battery=100.0,
+            )
+            uavs.append(uav)
+        return uavs

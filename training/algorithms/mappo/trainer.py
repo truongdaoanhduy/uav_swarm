@@ -13,7 +13,7 @@ import torch.nn as nn
 from collections import deque
 
 from config import AppConfig
-from env.sar_pettingzoo_env import SARPettingZooEnv
+from env_setup.sar_pettingzoo_env import SARPettingZooEnv
 from training.curriculum import CurriculumManager
 from training.algorithms.mappo.actor import ActorNetwork
 from training.algorithms.mappo.critic import CriticNetwork
