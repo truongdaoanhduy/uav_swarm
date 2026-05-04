@@ -288,13 +288,11 @@ class SARBaseEnv(gym.Env):
 
         # ✅ 8. Extreme step detection
         if global_reward["total"] < -100:
-            logger.warning(
-                "[EP %d][STEP %d] EXTREME: %.1f | %s",
                 self._episode_id,
                 self._step_count,
                 global_reward["total"],
                 self._reward_fn.summarize(global_reward),
-            )
+            
 
         # ✅ 9. Logging
         self._log_step(rewards_dict, cur_coverage, newly_found, uavs, obstacles)
@@ -547,19 +545,15 @@ class SARBaseEnv(gym.Env):
             worst = sorted(self._step_rewards_history, key=lambda x: x["total"])[:3]
             worst_str = ", ".join(f"step {s['step']}={s['total']:.1f}" for s in worst)
 
-        logger.error(
-            "\n%s\n🚨 EXTREME NEGATIVE EPISODE\n%s\n"
             "  Ep=%d | reward=%.1f | steps=%d | reason=%s\n"
             "  cov=%.1f%% | victims=%d/%d\n"
-            "  danger=%d | collisions=%d | bat_dead=%d | bat_crit=%d | disabled=%d\n"
-            "  worst: %s\n%s",
             "=" * 60, "=" * 60,
             self._episode_id, episode_reward, self._step_count,
             done_reason or ("truncated" if truncated else "N/A"),
             cur_coverage * 100, n_found, n_total,
             n_in_danger, n_collisions, n_dead_battery, n_battery_critical, n_disabled,
             worst_str, "=" * 60,
-        )
+        
 
         if self.verbose >= 3:
             import json, os
