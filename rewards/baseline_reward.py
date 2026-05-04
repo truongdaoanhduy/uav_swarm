@@ -558,14 +558,14 @@ class BaselineReward:
             if k not in ("raw_total", "total") and abs(v) > 0.001
         )
 
-        logger.warning(
-            f"[STEP {current_step}] EXTREME REWARD: {total:.1f}\n"
-            f"  Raw: {components['raw_total']:.1f} → clipped: {total:.1f}\n"
-            f"  Breakdown:\n{breakdown}\n"
-            f"  Context: danger={n_in_danger} UAVs, "
-            f"collisions={len(self._collision_penalized)}, "
-            f"coverage={coverage_map.get_coverage_rate():.1%}"
-        )
+        # logger.warning(
+        #     f"[STEP {current_step}] EXTREME REWARD: {total:.1f}\n"
+        #     f"  Raw: {components['raw_total']:.1f} → clipped: {total:.1f}\n"
+        #     f"  Breakdown:\n{breakdown}\n"
+        #     f"  Context: danger={n_in_danger} UAVs, "
+        #     f"collisions={len(self._collision_penalized)}, "
+        #     f"coverage={coverage_map.get_coverage_rate():.1%}"
+        # )
 
     # ═════════════════════════════════════════════════════════════════════════
     # PUBLIC UTILITIES
