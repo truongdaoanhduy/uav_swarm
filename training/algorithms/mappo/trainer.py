@@ -162,14 +162,8 @@ class MAPPOTrainer:
         curriculum_manager=None,
         seed: int = 42
     ):
-        try:
-            from IPython import get_ipython
-            if get_ipython() is not None:
-                from tqdm.notebook import tqdm
-            else:
-                from tqdm import tqdm
-        except ImportError:
-            from tqdm import tqdm
+        
+        from tqdm import tqdm
 
         env = self._create_env(seed)
         update_count = 0
