@@ -314,6 +314,62 @@ class MAPPOTrainer:
             print(f"  Final victims:   {rollout_metrics['mean_victims']:.2f}%")
         print(f"{'='*60}\n")
 
+    def _log_episode(
+        self,
+        ep_num: int,
+        reward: float,
+        coverage: float,
+        victims_found: int,
+        victims_total: int,
+        steps: int,
+        done_reason: str = "",
+        fleet_summary: dict = None,
+        pbar=None,
+    ):
+        """
+        ✅ Clean per-episode log - dọc, dễ đọc
+        In ra mỗi episode (hoặc mỗi N episodes)
+        """
+        # Icon theo kết quả
+        if reward > 200:
+            icon = "🟢"
+        elif reward > 0:
+            icon = "🟡"
+        else:
+            icon = "🔴"
+
+        vic_rate = victims_found / max(victims_total, 1) * 100
+
+        # ✅ Format dọc, mỗi episode 1 block
+        lines = [
+            f"\n{icon} Episode {ep_num:>5d}",
+            f"     Reward  : {reward:+8.1f}",
+            f"     Coverage: {coverage:5.1f}%",
+            f"     Victims : {victims_found:2d}/{victims_total:2d} ({vic_rate:.0f}%)",
+            f"     Steps   : {steps:4d}",
+        ]
+
+        # Thêm fleet info nếu có
+        if fleet_summary:
+            fr = fleet_summary.get("forced_returns", 0)
+            dis = fleet_summary.get("disables", 0)
+            if fr > 0 or dis > 0:
+                lines.append(
+                    f"     Battery : {fr} emergency-return | {dis} disabled"
+                )
+
+        # Reason nếu có
+        if done_reason and done_reason not in ("", "timeout"):
+            lines.append(f"     Reason  : {done_reason}")
+
+        msg = "\n".join(lines)
+
+        if pbar:
+            pbar.write(msg)
+        else:
+            print(msg)
+
+
     def rollout(self, env, pbar=None, max_episodes=None) -> Dict[str, float]:
         """Dispatch rollout."""
         if self.n_envs == 1:
@@ -321,16 +377,15 @@ class MAPPOTrainer:
         else:
             return self._rollout_vectorized(env, pbar=pbar, max_episodes=max_episodes)
 
-    def _rollout_single(self, env, pbar=None, max_episodes=None) -> Dict[str, float]:
-        """Rollout với single env."""
+    def _rollout_single(self, env, pbar=None, max_episodes=None):
         obs_dict, infos = env.reset()
-        global_obs = infos['uav_0']['global_obs']
+        global_obs      = infos['uav_0']['global_obs']
 
         episode_reward = 0.0
         episode_length = 0
         steps_collected = 0
         last_values = None
-        last_done = False
+        last_done   = False
 
         while steps_collected < self.rollout_length:
             if max_episodes is not None and self.total_episodes_done >= max_episodes:
@@ -346,7 +401,7 @@ class MAPPOTrainer:
             )
             next_global_obs = next_infos['uav_0']['global_obs']
 
-            agent_ids = sorted(rewards_dict.keys())
+            agent_ids  = sorted(rewards_dict.keys())
             rewards_np = np.array(
                 [rewards_dict[aid] for aid in agent_ids], dtype=np.float32
             )
@@ -365,46 +420,60 @@ class MAPPOTrainer:
                 done=done
             )
 
-            obs_dict = next_obs_dict
-            global_obs = next_global_obs
+            obs_dict    = next_obs_dict
+            global_obs  = next_global_obs
             episode_reward += rewards_np[0]
             episode_length += 1
             steps_collected += 1
-            self.total_steps_collected += 1  # ✅ Track steps
+            self.total_steps_collected += 1
 
             if done:
+                cov = next_infos['uav_0']['coverage_rate'] * 100
+                vic_found = next_infos['uav_0']['victims_found']
+                vic_total = next_infos['uav_0']['victims_total']
+                done_reason = next_infos['uav_0'].get('done_reason', '')
+
                 self.episode_rewards.append(episode_reward)
                 self.episode_lengths.append(episode_length)
-                cov = next_infos['uav_0']['coverage_rate'] * 100
-                vic = (
-                    next_infos['uav_0']['victims_found']
-                    / max(next_infos['uav_0']['victims_total'], 1) * 100
-                )
                 self.episode_coverage.append(cov)
-                self.episode_victims.append(vic)
+                self.episode_victims.append(
+                    vic_found / max(vic_total, 1) * 100
+                )
                 self.total_episodes_done += 1
 
-                if pbar is not None:
+                # ✅ Clean log - 1 block per episode
+                self._log_episode(
+                    ep_num        = self.total_episodes_done,
+                    reward        = episode_reward,
+                    coverage      = cov,
+                    victims_found = vic_found,
+                    victims_total = vic_total,
+                    steps         = episode_length,
+                    done_reason   = done_reason,
+                    pbar          = pbar,
+                )
+
+                if pbar:
                     pbar.update(1)
 
                 if max_episodes is not None and self.total_episodes_done >= max_episodes:
                     last_values = self.get_values(global_obs)
-                    last_done = done
+                    last_done   = done
                     break
 
                 obs_dict, infos = env.reset()
-                global_obs = infos['uav_0']['global_obs']
-                episode_reward = 0.0
-                episode_length = 0
+                global_obs      = infos['uav_0']['global_obs']
+                episode_reward  = 0.0
+                episode_length  = 0
 
             if steps_collected == self.rollout_length:
                 last_values = self.get_values(global_obs)
-                last_done = done
+                last_done   = done
 
         if last_values is None:
             last_values = self.get_values(global_obs)
-            last_done = False
-        
+            last_done   = False
+
         self.buffer.compute_gae(last_values, last_done)
 
         return {
@@ -413,6 +482,7 @@ class MAPPOTrainer:
             'mean_coverage':  float(np.mean(self.episode_coverage)) if self.episode_coverage else 0.0,
             'mean_victims':   float(np.mean(self.episode_victims)) if self.episode_victims else 0.0,
         }
+
 
     def _rollout_vectorized(self, env, pbar=None, max_episodes=None) -> Dict[str, float]:
         """Rollout với vectorized envs."""
