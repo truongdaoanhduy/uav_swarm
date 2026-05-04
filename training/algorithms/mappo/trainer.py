@@ -314,6 +314,8 @@ class MAPPOTrainer:
             print(f"  Final victims:   {rollout_metrics['mean_victims']:.2f}%")
         print(f"{'='*60}\n")
 
+    # ===== SỬA HÀM _log_episode =====
+
     def _log_episode(
         self,
         ep_num: int,
@@ -325,11 +327,15 @@ class MAPPOTrainer:
         done_reason: str = "",
         fleet_summary: dict = None,
         pbar=None,
+        log_every: int = 10,  # ✅ NEW: Mặc định log mỗi 10 episodes
     ):
         """
-        ✅ Clean per-episode log - dọc, dễ đọc
-        In ra mỗi episode (hoặc mỗi N episodes)
+        ✅ Log mỗi N episodes (configurable)
         """
+        # ✅ Chỉ log khi ep_num chia hết cho log_every
+        if ep_num % log_every != 0:
+            return  # Skip log cho episode này
+
         # Icon theo kết quả
         if reward > 200:
             icon = "🟢"
@@ -340,29 +346,25 @@ class MAPPOTrainer:
 
         vic_rate = victims_found / max(victims_total, 1) * 100
 
-        # ✅ Format dọc, mỗi episode 1 block
-        lines = [
-            f"\n{icon} Episode {ep_num:>5d}",
-            f"     Reward  : {reward:+8.1f}",
-            f"     Coverage: {coverage:5.1f}%",
-            f"     Victims : {victims_found:2d}/{victims_total:2d} ({vic_rate:.0f}%)",
-            f"     Steps   : {steps:4d}",
-        ]
+        # ✅ Format NGANG, compact hơn (1 dòng)
+        msg = (
+            f"{icon} Ep {ep_num:>5d} | "
+            f"Rew: {reward:+7.1f} | "
+            f"Cov: {coverage:5.1f}% | "
+            f"Vic: {victims_found:2d}/{victims_total:2d} ({vic_rate:4.0f}%) | "
+            f"Steps: {steps:4d}"
+        )
 
         # Thêm fleet info nếu có
         if fleet_summary:
             fr = fleet_summary.get("forced_returns", 0)
             dis = fleet_summary.get("disables", 0)
             if fr > 0 or dis > 0:
-                lines.append(
-                    f"     Battery : {fr} emergency-return | {dis} disabled"
-                )
+                msg += f" | Bat: {fr}ret/{dis}dis"
 
         # Reason nếu có
         if done_reason and done_reason not in ("", "timeout"):
-            lines.append(f"     Reason  : {done_reason}")
-
-        msg = "\n".join(lines)
+            msg += f" | {done_reason}"
 
         if pbar:
             pbar.write(msg)
@@ -442,6 +444,7 @@ class MAPPOTrainer:
                 self.total_episodes_done += 1
 
                 # ✅ Clean log - 1 block per episode
+                # ✅ Log mỗi 10 episodes
                 self._log_episode(
                     ep_num        = self.total_episodes_done,
                     reward        = episode_reward,
@@ -451,10 +454,11 @@ class MAPPOTrainer:
                     steps         = episode_length,
                     done_reason   = done_reason,
                     pbar          = pbar,
+                    log_every     = 10,  # ✅ NEW: Mỗi 10 episodes
                 )
 
                 if pbar:
-                    pbar.update(1)
+                    pbar.update(1)  # ✅ CRITICAL: Update mỗi episode
 
                 if max_episodes is not None and self.total_episodes_done >= max_episodes:
                     last_values = self.get_values(global_obs)
@@ -526,10 +530,10 @@ class MAPPOTrainer:
             )
 
             (next_obs_batch,
-             next_global_obs_batch,
-             rewards_batch,
-             dones,
-             infos) = env.step(actions_batch)
+            next_global_obs_batch,
+            rewards_batch,
+            dones,
+            infos) = env.step(actions_batch)
 
             for env_idx in range(self.n_envs):
                 if max_episodes is not None and self.total_episodes_done >= max_episodes:
@@ -546,27 +550,45 @@ class MAPPOTrainer:
                     done=dones[env_idx]
                 )
                 
-                # ✅ Track steps per env
                 self.total_steps_collected += 1
-
                 episode_reward_buffer[env_idx] += rewards_batch[env_idx][0]
                 episode_length_buffer[env_idx] += 1
 
                 if dones[env_idx]:
-                    self.episode_rewards.append(float(episode_reward_buffer[env_idx]))
-                    self.episode_lengths.append(int(episode_length_buffer[env_idx]))
+                    # ✅ FIX: Extract variables TRƯỚC khi log
+                    ep_reward = float(episode_reward_buffer[env_idx])
+                    ep_steps  = int(episode_length_buffer[env_idx])
+                    
+                    self.episode_rewards.append(ep_reward)
+                    self.episode_lengths.append(ep_steps)
 
+                    # Extract coverage & victims từ info
                     info_e = infos[env_idx]
+                    cov = 0.0
+                    vic_found = 0
+                    vic_total = 1
+                    
                     if 'uav_0' in info_e:
-                        cov = info_e['uav_0']['coverage_rate'] * 100
-                        vic = (
-                            info_e['uav_0']['victims_found']
-                            / max(info_e['uav_0']['victims_total'], 1) * 100
-                        )
+                        cov       = info_e['uav_0'].get('coverage_rate', 0.0) * 100
+                        vic_found = info_e['uav_0'].get('victims_found', 0)
+                        vic_total = max(info_e['uav_0'].get('victims_total', 1), 1)
+                        
                         self.episode_coverage.append(cov)
-                        self.episode_victims.append(vic)
+                        self.episode_victims.append(vic_found / vic_total * 100)
 
                     self.total_episodes_done += 1
+
+                    # ✅ NOW log với đúng variables
+                    self._log_episode(
+                        ep_num        = self.total_episodes_done,
+                        reward        = ep_reward,       # ✅ Defined above
+                        coverage      = cov,             # ✅ Defined above
+                        victims_found = vic_found,       # ✅ Defined above
+                        victims_total = vic_total,       # ✅ Defined above
+                        steps         = ep_steps,        # ✅ Defined above
+                        pbar          = pbar,
+                        log_every     = 10,
+                    )
 
                     if pbar is not None:
                         pbar.update(1)
