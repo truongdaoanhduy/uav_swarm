@@ -16,7 +16,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="MAPPO Training for SAR UAV Swarm")
     parser.add_argument("--total-episodes",  type=int,   default=3000)
     parser.add_argument("--seed",            type=int,   default=42)
-    parser.add_argument("--device",          type=str,   default="auto",
+    parser.add_argument("--device",          type=str,   default="cpu",
                         choices=["auto", "cuda", "cpu"])
     parser.add_argument("--run-name",        type=str,   default=None)
     parser.add_argument("--n-envs",          type=int,   default=1)

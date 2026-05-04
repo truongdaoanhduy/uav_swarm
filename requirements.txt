@@ -12,9 +12,12 @@ seaborn
 # Reinforcement Learning (optional but useful)
 gymnasium
 stable-baselines3
-
+pettingzoo
+polygone
+plotly
 torch
 tensorboard
+shapely
 
 wandb
 tqdm
