@@ -35,7 +35,7 @@ class RewardConfig:
     # ══════════════════════════════════════════════════════════
     # 3. BATTERY PENALTIES (progressive)
     # ══════════════════════════════════════════════════════════
-    r_battery_20: float = -1.0       # ✅ CHANGED: -0.5 → 0.0 (remove early penalty)
+    r_battery_20: float = -0.5       # ✅ CHANGED: -0.5 → 0.0 (remove early penalty)
     r_battery_10: float = -5.0      # ✅ CHANGED: -1.5 → -1.0 (reduce)
     r_battery_5: float = -20.0       # UNCHANGED (critical zone)
     r_battery_dead: float = -100.0  # UNCHANGED (one-time)
@@ -48,7 +48,7 @@ class RewardConfig:
     # ══════════════════════════════════════════════════════════
     # 4. COLLISION PENALTY (one-time per obstacle)
     # ══════════════════════════════════════════════════════════
-    r_collision_obstacle: float = -30.0  # UNCHANGED
+    r_collision_obstacle: float = -35.0  # UNCHANGED
 
     # ══════════════════════════════════════════════════════════
     # 5. DANGER ZONE PENALTY (per step inside zone)
