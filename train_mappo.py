@@ -90,11 +90,11 @@ def parse_args():
                         help="Critic learning rate")
     
     # Logging
-    parser.add_argument("--log-interval", type=int, default=10,
+    parser.add_argument("--log-interval", type=int, default=1,
                         help="Detailed log every N episodes")
-    parser.add_argument("--viz-interval", type=int, default=None,
+    parser.add_argument("--viz-interval", type=int, default=2,
                         help="2D viz every N episodes (default: 5 × log-interval)")
-    parser.add_argument("--checkpoint-interval", type=int, default=20,
+    parser.add_argument("--checkpoint-interval", type=int, default=2,
                         help="Save checkpoint every N episodes")
     
     return parser.parse_args()
