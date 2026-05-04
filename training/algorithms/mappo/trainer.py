@@ -35,7 +35,8 @@ class MAPPOTrainer:
     def __init__(
         self,
         config: AppConfig,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: str = "cpu",
+        # device: str = "cuda" if torch.cuda.is_available() else "cpu",
         run_name: Optional[str] = None,
         n_envs: int = 1
     ):

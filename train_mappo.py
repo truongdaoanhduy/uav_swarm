@@ -211,7 +211,8 @@ def main():
         config   = cfg,
         device   = device,
         run_name = args.run_name,
-        n_envs   = args.n_envs
+        n_envs   = args.n_envs,
+        device = 'cpu'
     )
 
     trainer.train(
