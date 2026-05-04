@@ -35,8 +35,7 @@ class MAPPOTrainer:
     def __init__(
         self,
         config: AppConfig,
-        device: str = "cpu",
-        # device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
         run_name: Optional[str] = None,
         n_envs: int = 1
     ):
@@ -382,13 +381,13 @@ class MAPPOTrainer:
 
     def _rollout_single(self, env, pbar=None, max_episodes=None):
         obs_dict, infos = env.reset()
-        global_obs      = infos['uav_0']['global_obs']
+        global_obs = infos['uav_0']['global_obs']
 
         episode_reward = 0.0
         episode_length = 0
         steps_collected = 0
         last_values = None
-        last_done   = False
+        last_done = False
 
         while steps_collected < self.rollout_length:
             if max_episodes is not None and self.total_episodes_done >= max_episodes:
@@ -404,7 +403,7 @@ class MAPPOTrainer:
             )
             next_global_obs = next_infos['uav_0']['global_obs']
 
-            agent_ids  = sorted(rewards_dict.keys())
+            agent_ids = sorted(rewards_dict.keys())
             rewards_np = np.array(
                 [rewards_dict[aid] for aid in agent_ids], dtype=np.float32
             )
@@ -423,8 +422,8 @@ class MAPPOTrainer:
                 done=done
             )
 
-            obs_dict    = next_obs_dict
-            global_obs  = next_global_obs
+            obs_dict = next_obs_dict
+            global_obs = next_global_obs
             episode_reward += rewards_np[0]
             episode_length += 1
             steps_collected += 1
@@ -434,58 +433,57 @@ class MAPPOTrainer:
                 cov = next_infos['uav_0']['coverage_rate'] * 100
                 vic_found = next_infos['uav_0']['victims_found']
                 vic_total = next_infos['uav_0']['victims_total']
-                done_reason = next_infos['uav_0'].get('done_reason', '')
 
                 self.episode_rewards.append(episode_reward)
                 self.episode_lengths.append(episode_length)
                 self.episode_coverage.append(cov)
-                self.episode_victims.append(
-                    vic_found / max(vic_total, 1) * 100
-                )
+                self.episode_victims.append(vic_found / max(vic_total, 1) * 100)
                 self.total_episodes_done += 1
 
-                # ✅ Clean log - 1 block per episode
-                # ✅ Log mỗi 10 episodes
-                self._log_episode(
-                    ep_num        = self.total_episodes_done,
-                    reward        = episode_reward,
-                    coverage      = cov,
-                    victims_found = vic_found,
-                    victims_total = vic_total,
-                    steps         = episode_length,
-                    done_reason   = done_reason,
-                    pbar          = pbar,
-                    log_every     = 10,  # ✅ NEW: Mỗi 10 episodes
-                )
+                # ✅ LOG TRỰC TIẾP - Mỗi 10 episodes
+                if self.total_episodes_done % 10 == 0:
+                    icon = "🟢" if episode_reward > 200 else "🟡" if episode_reward > 0 else "🔴"
+                    vic_rate = vic_found / max(vic_total, 1) * 100
+                    msg = (
+                        f"{icon} Ep {self.total_episodes_done:>5d} | "
+                        f"Rew: {episode_reward:+7.1f} | "
+                        f"Cov: {cov:5.1f}% | "
+                        f"Vic: {vic_found:2d}/{vic_total:2d} ({vic_rate:4.0f}%) | "
+                        f"Steps: {episode_length:4d}"
+                    )
+                    if pbar:
+                        pbar.write(msg)
+                    else:
+                        print(msg)
 
                 if pbar:
-                    pbar.update(1)  # ✅ CRITICAL: Update mỗi episode
+                    pbar.update(1)
 
                 if max_episodes is not None and self.total_episodes_done >= max_episodes:
                     last_values = self.get_values(global_obs)
-                    last_done   = done
+                    last_done = done
                     break
 
                 obs_dict, infos = env.reset()
-                global_obs      = infos['uav_0']['global_obs']
-                episode_reward  = 0.0
-                episode_length  = 0
+                global_obs = infos['uav_0']['global_obs']
+                episode_reward = 0.0
+                episode_length = 0
 
             if steps_collected == self.rollout_length:
                 last_values = self.get_values(global_obs)
-                last_done   = done
+                last_done = done
 
         if last_values is None:
             last_values = self.get_values(global_obs)
-            last_done   = False
+            last_done = False
 
         self.buffer.compute_gae(last_values, last_done)
 
         return {
             'mean_ep_reward': float(np.mean(self.episode_rewards)) if self.episode_rewards else 0.0,
             'mean_ep_length': float(np.mean(self.episode_lengths)) if self.episode_lengths else 0.0,
-            'mean_coverage':  float(np.mean(self.episode_coverage)) if self.episode_coverage else 0.0,
-            'mean_victims':   float(np.mean(self.episode_victims)) if self.episode_victims else 0.0,
+            'mean_coverage': float(np.mean(self.episode_coverage)) if self.episode_coverage else 0.0,
+            'mean_victims': float(np.mean(self.episode_victims)) if self.episode_victims else 0.0,
         }
 
 
@@ -550,46 +548,48 @@ class MAPPOTrainer:
                     log_probs=log_probs_batch[env_idx],
                     done=dones[env_idx]
                 )
-                
+
                 self.total_steps_collected += 1
                 episode_reward_buffer[env_idx] += rewards_batch[env_idx][0]
                 episode_length_buffer[env_idx] += 1
 
                 if dones[env_idx]:
-                    # ✅ FIX: Extract variables TRƯỚC khi log
                     ep_reward = float(episode_reward_buffer[env_idx])
-                    ep_steps  = int(episode_length_buffer[env_idx])
-                    
+                    ep_steps = int(episode_length_buffer[env_idx])
+
                     self.episode_rewards.append(ep_reward)
                     self.episode_lengths.append(ep_steps)
 
-                    # Extract coverage & victims từ info
                     info_e = infos[env_idx]
                     cov = 0.0
                     vic_found = 0
                     vic_total = 1
-                    
+
                     if 'uav_0' in info_e:
-                        cov       = info_e['uav_0'].get('coverage_rate', 0.0) * 100
+                        cov = info_e['uav_0'].get('coverage_rate', 0.0) * 100
                         vic_found = info_e['uav_0'].get('victims_found', 0)
                         vic_total = max(info_e['uav_0'].get('victims_total', 1), 1)
-                        
+
                         self.episode_coverage.append(cov)
                         self.episode_victims.append(vic_found / vic_total * 100)
 
                     self.total_episodes_done += 1
 
-                    # ✅ NOW log với đúng variables
-                    self._log_episode(
-                        ep_num        = self.total_episodes_done,
-                        reward        = ep_reward,       # ✅ Defined above
-                        coverage      = cov,             # ✅ Defined above
-                        victims_found = vic_found,       # ✅ Defined above
-                        victims_total = vic_total,       # ✅ Defined above
-                        steps         = ep_steps,        # ✅ Defined above
-                        pbar          = pbar,
-                        log_every     = 10,
-                    )
+                    # ✅ LOG TRỰC TIẾP - Mỗi 10 episodes
+                    if self.total_episodes_done % 10 == 0:
+                        icon = "🟢" if ep_reward > 200 else "🟡" if ep_reward > 0 else "🔴"
+                        vic_rate = vic_found / max(vic_total, 1) * 100
+                        msg = (
+                            f"{icon} Ep {self.total_episodes_done:>5d} | "
+                            f"Rew: {ep_reward:+7.1f} | "
+                            f"Cov: {cov:5.1f}% | "
+                            f"Vic: {vic_found:2d}/{vic_total:2d} ({vic_rate:4.0f}%) | "
+                            f"Steps: {ep_steps:4d}"
+                        )
+                        if pbar:
+                            pbar.write(msg)
+                        else:
+                            print(msg)
 
                     if pbar is not None:
                         pbar.update(1)
@@ -622,8 +622,8 @@ class MAPPOTrainer:
         return {
             'mean_ep_reward': float(np.mean(self.episode_rewards)) if self.episode_rewards else 0.0,
             'mean_ep_length': float(np.mean(self.episode_lengths)) if self.episode_lengths else 0.0,
-            'mean_coverage':  float(np.mean(self.episode_coverage)) if self.episode_coverage else 0.0,
-            'mean_victims':   float(np.mean(self.episode_victims)) if self.episode_victims else 0.0,
+            'mean_coverage': float(np.mean(self.episode_coverage)) if self.episode_coverage else 0.0,
+            'mean_victims': float(np.mean(self.episode_victims)) if self.episode_victims else 0.0,
         }
     
     def update(self) -> Dict[str, float]:
