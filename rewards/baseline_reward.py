@@ -180,7 +180,8 @@ class BaselineReward:
         # ── 3. Terminal bonus ────────────────────────────────────────────────
         if done:
             components["terminal"] = self._terminal_bonus(
-                cur_coverage, victims, current_step
+                cur_coverage, victims, current_step,
+                uavs=uavs  # ← Thêm
             )
 
         # ── 4. ✅ FIX BUG-31: Additive cap (không distort components) ───────
@@ -276,7 +277,8 @@ class BaselineReward:
         # ── 4. Terminal (shared) ─────────────────────────────────────────────
         if done:
             components["terminal"] = self._terminal_bonus(
-                cur_coverage, victims, current_step
+                cur_coverage, victims, current_step,
+                uavs=uavs  # ← Thêm
             ) / n_active
 
         # ── 5. ✅ FIX BUG-31: Additive cap ──────────────────────────────────
@@ -339,38 +341,32 @@ class BaselineReward:
         coverage_rate: float,
         victims:       List["BaseVictim"],
         current_step:  int,
+        uavs:          Optional[List[UAV]] = None,  # ← Thêm param
     ) -> float:
-        """
-        ✅ FIX BUG-34: Terminal bonus không saturate.
-
-        Scale trực tiếp theo terminal_cap → gradient non-zero ở mọi coverage level.
-
-        Old: coverage_bonus = 200 * coverage → max 200, bị clip 100 → mất gradient
-        New: coverage_bonus = cap * 0.7 * coverage → max 70, không bao giờ saturate
-
-        Budget allocation:
-            70% coverage (luôn visible)
-            20% victim found rate
-            10% time efficiency bonus (chỉ khi coverage >= 80%)
-        """
+        """Terminal bonus với battery survival reward."""
         n_total     = max(len(victims), 1)
         n_found     = sum(1 for v in victims if v.is_found)
         found_ratio = n_found / n_total
         time_ratio  = current_step / max(self._max_steps, 1)
 
-        # ✅ Scale trực tiếp theo cap (không bao giờ vượt cap)
-        coverage_bonus = self._terminal_cap * 0.70 * coverage_rate
+        coverage_bonus = self._terminal_cap * 0.60 * coverage_rate   # ← 70% → 60%
         victim_bonus   = self._terminal_cap * 0.20 * found_ratio
         time_bonus     = (
             self._terminal_cap * 0.10 * (1.0 - time_ratio)
-            if coverage_rate >= 0.80
-            else 0.0
+            if coverage_rate >= 0.80 else 0.0
         )
 
-        raw = coverage_bonus + victim_bonus + time_bonus
-        # Clip chỉ để tránh float overflow
-        return float(np.clip(raw, 0.0, self._terminal_cap))
+        # ✅ NEW: Battery survival bonus (10%)
+        battery_bonus = 0.0
+        if uavs is not None:
+            alive = [u for u in uavs if u.state != UAVState.DISABLED]
+            if alive:
+                mean_bat = np.mean([u.battery_pct for u in alive])
+                # Reward UAV còn pin nhiều khi kết thúc
+                battery_bonus = self._terminal_cap * 0.10 * (mean_bat / 100.0)
 
+        raw = coverage_bonus + victim_bonus + time_bonus + battery_bonus
+        return float(np.clip(raw, 0.0, self._terminal_cap))
     # ═════════════════════════════════════════════════════════════════════════
     # PRIVATE: DELTA SHAPING (FIX BUG-33)
     # ═════════════════════════════════════════════════════════════════════════
@@ -659,44 +655,49 @@ def _battery_penalty_single(
     return 0.0
 
 
+# TRONG baseline_reward.py
+# Thay hàm _battery_urgency_shaping():
+
 def _battery_urgency_shaping(
     uav:      UAV,
     stations: Optional[List],
     map_size: float,
 ) -> float:
     """
-    ✅ NEW BUG-35: Battery urgency shaping.
-
-    Tạo incentive quay về station khi battery thấp.
-    Reward = -distance_to_nearest_station * severity
-
-    Design:
-        - Chỉ active khi battery < 15%
-        - Scale theo distance (gần station → ít penalty)
-        - Normalize theo map_size (tránh bias theo map scale)
+    Battery urgency shaping v2.
+    
+    Khi battery thấp:
+        - Penalize nặng nếu đang xa station VÀ không về
+        - Reward nếu đang tiến về station (delta-based)
     """
     if stations is None or not stations:
         return 0.0
 
     bat = uav.battery_pct
 
-    # Chỉ active khi gần ngưỡng return (15%)
-    if bat > 15.0:
+    # Không áp dụng khi đủ pin hoặc đang sạc
+    if bat > 20.0 or uav.state in (UAVState.CHARGING, UAVState.DISABLED):
         return 0.0
 
-    # Severity tăng dần
+    # Severity tăng dần theo mức độ khẩn cấp
     if bat <= 5.0:
-        severity = 0.3
+        severity = 1.0    # ← Tăng từ 0.3
     elif bat <= 10.0:
-        severity = 0.15
+        severity = 0.5    # ← Tăng từ 0.15
+    elif bat <= 15.0:
+        severity = 0.2    # ← Tăng từ 0.05
     else:
-        severity = 0.05
+        severity = 0.05   # 15-20% zone
 
-    # Distance đến station gần nhất (normalized)
+    # Distance đến station gần nhất
     min_dist = min(dist_2d(uav.pos, s.pos) for s in stations)
     normalized_dist = min_dist / max(map_size, 1.0)
 
-    return -normalized_dist * severity
+    # ✅ Penalty tỉ lệ thuận với khoảng cách × severity
+    # Gần station → ít penalty, xa station → nhiều penalty
+    penalty = -normalized_dist * severity * 3.0  # ← Scale up
+
+    return float(np.clip(penalty, -2.0, 0.0))  # ← Cap để không dominate
 
 
 def _proximity_reward(
