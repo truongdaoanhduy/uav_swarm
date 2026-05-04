@@ -32,7 +32,11 @@ def parse_args():
     parser.add_argument("--map-size",        type=int,   default=None)
     parser.add_argument("--n-victims",       type=int,   default=None)
     parser.add_argument("--n-debris",        type=int,   default=None)
-
+    parser.add_argument(
+        "--force-print",
+        action="store_true",
+        help="Kaggle/Colab: bypass tqdm, dùng print+flush"
+    )
     # Training hyperparams
     parser.add_argument("--rollout-length",  type=int,   default=None)
     parser.add_argument("--batch-size",      type=int,   default=None)
@@ -215,10 +219,12 @@ def main():
     )
 
     trainer.train(
-        total_episodes     = args.total_episodes,
-        curriculum_manager = curriculum_manager,
-        seed               = args.seed
-    )
+    total_episodes     = args.total_episodes,
+    curriculum_manager = curriculum_manager,
+    seed               = args.seed,
+    log_every_ep       = 10,
+    force_print        = args.force_print,
+)
 
     print(f"\n{'='*60}")
     print(f"✅ TRAINING COMPLETE")
