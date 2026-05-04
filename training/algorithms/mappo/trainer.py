@@ -337,6 +337,7 @@ class MAPPOTrainer:
                     self.ep_victims.append(vf / vt * 100)
                     self.total_episodes_done += 1
                     
+                    
                     # Update tqdm
                     status = "✓" if success else "✗"
                     pbar.update(1)
