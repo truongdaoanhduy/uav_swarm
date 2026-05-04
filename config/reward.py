@@ -15,15 +15,11 @@ class RewardConfig:
             3. Step penalty cap to prevent single-step collapse
             4. Multi-agent aware (proximity normalized by pair count)
 
-    Performance targets:
-        Random policy (EASY):   -50 → +150
-        Good policy (EASY):     +250 → +400
-        Expert policy (EASY):   +400 → +600
     """
     # ══════════════════════════════════════════════════════════
     # 1. COVERAGE REWARD (dense, incremental)
     # ══════════════════════════════════════════════════════════
-    r_coverage_delta: float = 6.0  # ✅ TUNED: 8.0 → 6.0 (avoid over-positive)
+    r_coverage_delta: float = 6.0 
     # Reward per 1% coverage increase
     # Max per episode: +600 (100% coverage) - achievable but not trivial
     # Expected with random (55%): ~330
@@ -31,7 +27,7 @@ class RewardConfig:
     # ══════════════════════════════════════════════════════════
     # 2. VICTIM DISCOVERY REWARD (sparse, high value)
     # ══════════════════════════════════════════════════════════
-    r_victim_base: float = 50.0  # UNCHANGED
+    r_victim_base: float = 30.0  # UNCHANGED
     # Base × (urgency / 5.0)
     # Range: +10 (urgency=1) to +50 (urgency=5)
     # Expected with random (53%, avg urgency=3): ~318
@@ -39,9 +35,9 @@ class RewardConfig:
     # ══════════════════════════════════════════════════════════
     # 3. BATTERY PENALTIES (progressive)
     # ══════════════════════════════════════════════════════════
-    r_battery_20: float = 0.0       # ✅ CHANGED: -0.5 → 0.0 (remove early penalty)
-    r_battery_10: float = -1.0      # ✅ CHANGED: -1.5 → -1.0 (reduce)
-    r_battery_5: float = -3.0       # UNCHANGED (critical zone)
+    r_battery_20: float = -1.0       # ✅ CHANGED: -0.5 → 0.0 (remove early penalty)
+    r_battery_10: float = -5.0      # ✅ CHANGED: -1.5 → -1.0 (reduce)
+    r_battery_5: float = -20.0       # UNCHANGED (critical zone)
     r_battery_dead: float = -100.0  # UNCHANGED (one-time)
 
     # Rationale:
@@ -74,15 +70,15 @@ class RewardConfig:
     # ══════════════════════════════════════════════════════════
     # 7. FLEET MANAGEMENT INCENTIVES (deprecated - set to 0)
     # ══════════════════════════════════════════════════════════
-    r_fleet_deploy: float = 0.0   # ✅ CHANGED: 2.0 → 0.0 (RL controls)
-    r_fleet_recall: float = 0.0   # ✅ CHANGED: -1.0 → 0.0 (RL controls)
+    r_fleet_deploy: float = 0.0  
+    r_fleet_recall: float = 0.0   
     
     # Rationale: Fleet behavior should emerge from RL, not hand-crafted
 
     # ══════════════════════════════════════════════════════════
     # 8. TIME PENALTY (gentle pressure)
     # ══════════════════════════════════════════════════════════
-    r_time_penalty: float = -0.05   # ✅ CHANGED: -0.1 → -0.05
+    r_time_penalty: float = -0.1   # ✅ CHANGED: -0.1 → -0.05
     # With 4 UAVs × 300 steps: -60 total (manageable)
 
     # ══════════════════════════════════════════════════════════

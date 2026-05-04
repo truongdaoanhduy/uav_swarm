@@ -94,7 +94,7 @@ def parse_args():
                         help="Detailed log every N episodes")
     parser.add_argument("--viz-interval", type=int, default=None,
                         help="2D viz every N episodes (default: 5 × log-interval)")
-    parser.add_argument("--checkpoint-interval", type=int, default=100,
+    parser.add_argument("--checkpoint-interval", type=int, default=20,
                         help="Save checkpoint every N episodes")
     
     return parser.parse_args()

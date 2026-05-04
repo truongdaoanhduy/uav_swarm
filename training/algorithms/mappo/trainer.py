@@ -10,7 +10,32 @@ import numpy as np
 import torch
 import torch.nn as nn
 from collections import deque
-from tqdm import tqdm
+# Đầu file, thay import tqdm
+
+# ✅ Auto-detect tqdm (terminal vs notebook)
+def _get_tqdm():
+    """Return đúng tqdm class tùy theo môi trường."""
+    try:
+        shell = get_ipython().__class__.__name__
+        if shell in ('ZMQInteractiveShell', 'Shell'):
+            try:
+                import ipywidgets  # noqa
+                from tqdm.notebook import tqdm as _tqdm
+                return _tqdm
+            except ImportError:
+                # ipywidgets chưa install → dùng tqdm thường
+                from tqdm import tqdm as _tqdm
+                return _tqdm
+        else:
+            from tqdm import tqdm as _tqdm
+            return _tqdm
+    except NameError:
+        # Đang chạy từ terminal (python script)
+        from tqdm import tqdm as _tqdm
+        return _tqdm
+
+
+tqdm = _get_tqdm()
 
 from config import AppConfig
 from env_setup.sar_pettingzoo_env import SARPettingZooEnv
@@ -140,11 +165,20 @@ class MAPPOTrainer:
         self.total_episodes_done = 0
         self.total_steps = 0
         self.update_count = 0
-        
+        import os
         # Dirs
-        self.output_dir     = Path("results") / "mappo" / self.run_name
+        is_kaggle = os.path.exists("/kaggle/working")
+    
+        if is_kaggle:
+            # Kaggle: lưu vào /kaggle/working (có thể download)
+            base_dir = Path("/kaggle/working/results")
+        else:
+            # Local: lưu vào ./results
+            base_dir = Path("results")
+        self.output_dir = base_dir / "mappo" / self.run_name
         self.checkpoint_dir = self.output_dir / "checkpoints"
-        self.viz_dir        = self.output_dir / "viz"
+        self.viz_dir = self.output_dir / "viz"
+        
         for d in [self.checkpoint_dir, self.viz_dir]:
             d.mkdir(parents=True, exist_ok=True)
         
@@ -227,7 +261,15 @@ class MAPPOTrainer:
         
         self.save_checkpoint(self.total_episodes_done, curriculum_manager, tag="final")
         self._print_final(time.time() - start_time, last_rollout)
-    
+        import os
+        if os.path.exists("/kaggle/working"):
+            print(f"\n📥 KAGGLE DOWNLOAD:")
+            print(f"   Files saved to: /kaggle/working/results/")
+            print(f"   Right sidebar → Output → Download all files")
+            print(f"")
+            print(f"   Or download individual files:")
+            print(f"   - Final checkpoint: {self.checkpoint_dir}/checkpoint_final.pt")
+            print(f"   - Training plot:    {self.output_dir}/training_curves.png")
     # ══════════════════════════════════════════════════════════════════
     # ROLLOUT
     # ══════════════════════════════════════════════════════════════════
@@ -277,6 +319,18 @@ class MAPPOTrainer:
                     vf  = int(u0.get("victims_found", 0))
                     vt  = max(int(u0.get("victims_total", 1)), 1)
                     
+                    # Done reason & success
+                    done_reason = u0.get("done_reason", "unknown")
+                    success = u0.get("success", False)
+                    
+                    # Battery stats (nếu có)
+                    battery_mean = 0.0
+                    battery_min = 0.0
+                    if "battery_stats" in u0:
+                        bstats = u0["battery_stats"]
+                        battery_mean = bstats.get("mean", 0.0)
+                        battery_min = bstats.get("min", 0.0)
+                    
                     self.ep_rewards.append(float(ep_rew[ei]))
                     self.ep_lengths.append(int(ep_len[ei]))
                     self.ep_coverage.append(cov)
@@ -284,13 +338,35 @@ class MAPPOTrainer:
                     self.total_episodes_done += 1
                     
                     # Update tqdm
+                    status = "✓" if success else "✗"
                     pbar.update(1)
+                    reason_label = {
+                        "disabled":  "🔋dead",
+                        "truncated": "⏱timeout",
+                        "coverage":  "✅cov",
+                        "victims":   "✅vic",
+                        None:        "?",
+                    }.get(done_reason, done_reason[:6] if done_reason else "?")
+
                     pbar.set_postfix(ordered_dict={
-                        "rew": f"{float(ep_rew[ei]):+.1f}",
-                        "cov": f"{cov:.1f}%",
-                        "vic": f"{vf}/{vt}",
-                        "upd": self.update_count,
+                        "rew":    f"{float(ep_rew[ei]):+.0f}",
+                        "cov":    f"{cov:.0f}%",
+                        "vic":    f"{vf}/{vt}",
+                        "step":   f"{ep_len[ei]}/{self.config.env.max_steps}",
+                        "bat":    f"{battery_mean:.0f}%",
+                        "end":    f"{status}{reason_label}",
                     })
+                    
+                    # Log every 10 episodes
+                    if self.total_episodes_done % 10 == 0:
+                        pbar.write(
+                            f"[EP {self.total_episodes_done:4d}] "
+                            f"{status} {done_reason:8s} | "
+                            f"step={ep_len[ei]:4d}/{self.config.env.max_steps} | "
+                            f"bat={battery_mean:5.1f}% (min={battery_min:5.1f}%) | "
+                            f"rew={ep_rew[ei]:+7.1f} | "
+                            f"cov={cov:5.1f}% | vic={vf:2d}/{vt:2d}"
+                        )
                     
                     ep_rew[ei] = 0.0
                     ep_len[ei] = 0
@@ -369,6 +445,118 @@ class MAPPOTrainer:
             "clip_fraction": float(np.mean(clip_fracs)),
         }
     
+        # Thêm vào cuối class MAPPOTrainer, trước _print_init():
+
+    def plot_training_curves(self, save_path: str = None):
+        """
+        Vẽ 4 đồ thị training curves.
+        
+        Args:
+            save_path: Path để lưu figure (nếu None → show interactive)
+        """
+        try:
+            import matplotlib
+            if save_path:
+                matplotlib.use("Agg")  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            
+            if not self.ep_rewards:
+                print("⚠️  No training data to plot")
+                return
+            
+            # Convert deque → list
+            episodes = list(range(1, len(self.ep_rewards) + 1))
+            rewards  = list(self.ep_rewards)
+            coverage = list(self.ep_coverage)
+            victims  = list(self.ep_victims)
+            lengths  = list(self.ep_lengths)
+            
+            # Create figure
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+            fig.suptitle(f"MAPPO Training Curves — {self.run_name}", fontsize=16, fontweight="bold")
+            
+            # ── 1. Episode Reward ─────────────────────────────────────
+            ax = axes[0, 0]
+            ax.plot(episodes, rewards, alpha=0.3, color="steelblue", linewidth=0.5)
+            
+            # Smooth với rolling mean
+            window = min(20, len(rewards) // 5)
+            if len(rewards) >= window:
+                smoothed = np.convolve(rewards, np.ones(window)/window, mode='valid')
+                smooth_x = list(range(window, len(rewards) + 1))
+                ax.plot(smooth_x, smoothed, color="darkblue", linewidth=2, label=f"MA({window})")
+            
+            ax.axhline(0, color='gray', linestyle='--', linewidth=0.8, alpha=0.5)
+            ax.set_xlabel("Episode", fontsize=11)
+            ax.set_ylabel("Reward", fontsize=11)
+            ax.set_title("Episode Reward", fontsize=12, fontweight="bold")
+            ax.grid(alpha=0.3)
+            ax.legend()
+            
+            # ── 2. Coverage Rate ──────────────────────────────────────
+            ax = axes[0, 1]
+            ax.plot(episodes, coverage, alpha=0.3, color="green", linewidth=0.5)
+            
+            if len(coverage) >= window:
+                smoothed = np.convolve(coverage, np.ones(window)/window, mode='valid')
+                smooth_x = list(range(window, len(coverage) + 1))
+                ax.plot(smooth_x, smoothed, color="darkgreen", linewidth=2, label=f"MA({window})")
+            
+            ax.axhline(70, color='orange', linestyle='--', linewidth=0.8, alpha=0.5, label="Target 70%")
+            ax.set_xlabel("Episode", fontsize=11)
+            ax.set_ylabel("Coverage (%)", fontsize=11)
+            ax.set_title("Coverage Rate", fontsize=12, fontweight="bold")
+            ax.set_ylim(0, 100)
+            ax.grid(alpha=0.3)
+            ax.legend()
+            
+            # ── 3. Victims Found Rate ─────────────────────────────────
+            ax = axes[1, 0]
+            ax.plot(episodes, victims, alpha=0.3, color="purple", linewidth=0.5)
+            
+            if len(victims) >= window:
+                smoothed = np.convolve(victims, np.ones(window)/window, mode='valid')
+                smooth_x = list(range(window, len(victims) + 1))
+                ax.plot(smooth_x, smoothed, color="indigo", linewidth=2, label=f"MA({window})")
+            
+            ax.axhline(80, color='orange', linestyle='--', linewidth=0.8, alpha=0.5, label="Target 80%")
+            ax.set_xlabel("Episode", fontsize=11)
+            ax.set_ylabel("Victims Found (%)", fontsize=11)
+            ax.set_title("Victims Found Rate", fontsize=12, fontweight="bold")
+            ax.set_ylim(0, 100)
+            ax.grid(alpha=0.3)
+            ax.legend()
+            
+            # ── 4. Episode Length ─────────────────────────────────────
+            ax = axes[1, 1]
+            ax.plot(episodes, lengths, alpha=0.3, color="coral", linewidth=0.5)
+            
+            if len(lengths) >= window:
+                smoothed = np.convolve(lengths, np.ones(window)/window, mode='valid')
+                smooth_x = list(range(window, len(lengths) + 1))
+                ax.plot(smooth_x, smoothed, color="red", linewidth=2, label=f"MA({window})")
+            
+            ax.axhline(self.config.env.max_steps, color='gray', linestyle='--', 
+                    linewidth=0.8, alpha=0.5, label=f"Max ({self.config.env.max_steps})")
+            ax.set_xlabel("Episode", fontsize=11)
+            ax.set_ylabel("Steps", fontsize=11)
+            ax.set_title("Episode Length", fontsize=12, fontweight="bold")
+            ax.grid(alpha=0.3)
+            ax.legend()
+            
+            plt.tight_layout()
+            
+            # Save hoặc show
+            if save_path:
+                plt.savefig(save_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                print(f"📊 Training curves saved: {save_path}")
+            else:
+                plt.show()
+        
+        except Exception as e:
+            print(f"⚠️  Failed to plot training curves: {e}")
+
     # ══════════════════════════════════════════════════════════════════
     # LOGGING & VIZ
     # ══════════════════════════════════════════════════════════════════
@@ -487,9 +675,20 @@ class MAPPOTrainer:
         print(f"  updates  : {self.update_count:,}")
         print(f"  steps    : {self.total_steps:,}")
         print(f"  time     : {elapsed/60:.1f} min")
+        
         if metrics:
-            print(f"  reward   : {metrics.get('mean_ep_reward', 0):.2f}")
+            print(f"\n📊 Final Performance (last 100 episodes):")
+            print(f"  reward   : {metrics.get('mean_ep_reward', 0):+.2f}")
             print(f"  coverage : {metrics.get('mean_coverage', 0):.2f}%")
             print(f"  victims  : {metrics.get('mean_victims', 0):.2f}%")
-        print(f"  ckpt     : {self.checkpoint_dir}/checkpoint_final.pt")
+            print(f"  ep_len   : {metrics.get('mean_ep_length', 0):.1f}")
+        
+        print(f"\n💾 Saved:")
+        print(f"  checkpoint: {self.checkpoint_dir}/checkpoint_final.pt")
+        
+        # Plot training curves
+        plot_path = self.output_dir / "training_curves.png"
+        self.plot_training_curves(save_path=str(plot_path))
+        print(f"  plot:       {plot_path}")
+        
         print(f"{'='*60}\n")

@@ -309,7 +309,7 @@ class SARBaseEnv(gym.Env):
         n_charge = sum(1 for u in uavs if u.state == UAVState.CHARGING)
         n_dead   = sum(1 for u in uavs if u.state == UAVState.DISABLED)
         success  = done_reason in ("coverage", "victims")
-
+        fleet_stats = fleet_manager.get_battery_stats()
         info = {
             "coverage":          cur_coverage,
             "victims_found":     n_found,
@@ -325,6 +325,7 @@ class SARBaseEnv(gym.Env):
             _INFO_DONE_REASON:   done_reason or ("truncated" if truncated else None),
             _INFO_REWARDS:       global_reward,
             "newly_found_ids":   [v.id for v in newly_found],
+            "battery_stats":     fleet_stats,
         }
         info['global_obs'] = critic_obs 
         # ✅ 12. Episode-end
