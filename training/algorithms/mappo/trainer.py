@@ -1,281 +1,96 @@
 """
 training/algorithms/mappo/trainer.py
-
-MAPPO Trainer v3 — Cloud-Compatible
-=====================================
-Fixes vs old version:
-  [F1] Kaggle bug: episodes không count → force_print + tqdm safe reset
-  [F2] Dual rollout path → unified (EnvWrapper)
-  [F3] GAE last_done = terminated only (không phải should_stop)
-  [F4] pbar.update() luôn trong main process (không bao giờ từ worker)
-
-Giữ nguyên:
-  - buffer.py  ✅ (không đổi)
-  - actor.py   ✅ (không đổi)
-  - critic.py  ✅ (không đổi)
-  - networks.py ✅ (không đổi)
+MAPPO Trainer với tqdm + episode tracking + viz support
 """
 
-import os
-import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
 from collections import deque
+from tqdm import tqdm
 
 from config import AppConfig
 from env_setup.sar_pettingzoo_env import SARPettingZooEnv
 from env_setup.vec_env import VectorizedEnv
-from training.curriculum import CurriculumManager
 from training.algorithms.mappo.actor import ActorNetwork
 from training.algorithms.mappo.critic import CriticNetwork
 from training.algorithms.mappo.buffer import RolloutBuffer
 
 
-# ════════════════════════════════════════════════════════════════
-# TQDM FACTORY — Cloud Safe
-# ════════════════════════════════════════════════════════════════
-
-def _make_tqdm(total: int, desc: str, force_print: bool = False):
-    """
-    Cloud-safe tqdm.
-    
-    Kaggle/Colab: tqdm.notebook (nếu có IPython)
-    Vast.ai/SSH:  tqdm standard với ascii=True, file=sys.stdout
-    force_print:  Bypass tqdm hoàn toàn → chỉ print() thô
-    """
-    if force_print:
-        # Kaggle workaround: tqdm bị broken → fake pbar
-        return _FakePbar(total=total, desc=desc)
-
-    try:
-        # Detect Jupyter/Kaggle kernel
-        shell = get_ipython().__class__.__name__  # type: ignore
-        if 'ZMQ' in shell or 'Terminal' in shell:
-            from tqdm.notebook import tqdm
-            return tqdm(
-                total=total,
-                desc=desc,
-                unit="ep",
-            )
-    except NameError:
-        pass
-
-    # Standard terminal
-    from tqdm import tqdm
-    return tqdm(
-        total=total,
-        desc=desc,
-        unit="ep",
-        dynamic_ncols=False,   # ✅ cloud safe
-        ascii=True,            # ✅ cloud safe  
-        ncols=100,
-        file=sys.stdout,       # ✅ force stdout (không phải stderr)
-        miniters=1,            # ✅ update mỗi episode
-        mininterval=0.1,       # ✅ refresh thường xuyên
-    )
-
-
-class _FakePbar:
-    """
-    Fake progress bar cho môi trường không support tqdm.
-    Dùng khi force_print=True.
-    """
-    def __init__(self, total: int, desc: str):
-        self.total   = total
-        self.n       = 0
-        self.desc    = desc
-        self._postfix = {}
-
-    def update(self, n: int = 1):
-        self.n += n
-        # Print progress mỗi update
-        pct = self.n / max(self.total, 1) * 100
-        pf  = " | ".join(f"{k}={v}" for k, v in self._postfix.items())
-        print(
-            f"\r[{self.desc}] {self.n}/{self.total} ({pct:.0f}%) | {pf}",
-            flush=True
-        )
-
-    def set_postfix(self, ordered_dict=None, refresh=True, **kwargs):
-        if ordered_dict:
-            self._postfix.update(ordered_dict)
-        self._postfix.update(kwargs)
-
-    def write(self, msg: str):
-        print(msg, flush=True)
-
-    def refresh(self):
-        pass
-
-    def close(self):
-        print(f"\n[{self.desc}] Done: {self.n}/{self.total}", flush=True)
-
-
-# ════════════════════════════════════════════════════════════════
-# ENV WRAPPER — Unified single/vector interface
-# ════════════════════════════════════════════════════════════════
-
 class _EnvWrapper:
-    """
-    Thin wrapper để unified single/vector env output.
+    """Unified env interface (single hoặc vectorized)."""
     
-    Mục đích:
-        Trainer không cần biết n_envs = 1 hay > 1.
-        Output luôn là batched arrays.
-    
-    Output format:
-        obs_batch:        [n_envs, n_agents, obs_dim]
-        global_obs_batch: [n_envs, global_dim]
-        rewards_batch:    [n_envs, n_agents]
-        dones:            List[bool] length n_envs
-        infos:            List[Dict] length n_envs
-    """
-
     def __init__(self, config: AppConfig, n_envs: int, seed: int):
         self.n_envs   = n_envs
         self.n_agents = config.env.n_uav
         self.obs_dim  = config.obs.actor_dim
-        self.g_dim    = config.obs.critic_dim
-        self._cfg     = config
+        self._config  = config
         self._seed    = seed
-        self._env     = self._build(config, n_envs, seed)
-
-    # ── Build ───────────────────────────────────────────────────
-
-    @staticmethod
-    def _build(config, n_envs, seed):
+        
         if n_envs == 1:
-            e = SARPettingZooEnv(config, render_mode=None)
-            e.reset(seed=seed)
-            return e
-        return VectorizedEnv(config, n_envs=n_envs, start_seed=seed)
-
-    # ── Reset ───────────────────────────────────────────────────
-
+            self._env = SARPettingZooEnv(config, render_mode=None)
+            self._env.reset(seed=seed)
+            self._is_vec = False
+        else:
+            self._env = VectorizedEnv(config, n_envs=n_envs, start_seed=seed)
+            self._is_vec = True
+    
     def reset(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Returns:
-            obs [n_envs, n_agents, obs_dim]
-            global_obs [n_envs, global_dim]
-        """
-        if self.n_envs == 1:
-            obs_d, info = self._env.reset(seed=self._seed)
-            obs = self._dict2arr(obs_d)                          # [n_agents, obs_dim]
-            g   = info['uav_0']['global_obs']                   # [global_dim]
-            return obs[None], g[None]                            # [1,n,o], [1,g]
-        else:
-            obs, g = self._env.reset()
-            return obs, g                                        # already batched
-
-    # ── Step ────────────────────────────────────────────────────
-
-    def step(
-        self, actions: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[bool], List[Dict]]:
-        """
-        Args:
-            actions: [n_envs, n_agents, action_dim]
-        Returns:
-            obs      [n_envs, n_agents, obs_dim]
-            g_obs    [n_envs, global_dim]
-            rewards  [n_envs, n_agents]
-            dones    List[bool] len n_envs
-            infos    List[Dict] len n_envs  — each has key 'uav_0'
-        """
-        if self.n_envs == 1:
-            return self._step_single(actions[0])
-        else:
-            obs, g, rews, dones, infos = self._env.step(actions)
-            return obs, g, rews, dones, infos
-
-    def _step_single(self, actions: np.ndarray):
-        """Single env → batched output."""
-        act_dict = {f"uav_{i}": actions[i] for i in range(self.n_agents)}
+        """Returns: obs_batch [n_envs, n_agents, obs_dim], global_batch [n_envs, global_obs_dim]"""
+        if self._is_vec:
+            return self._env.reset()
+        
+        obs_d, info = self._env.reset(seed=self._seed)
+        obs = np.array([obs_d[f"uav_{i}"] for i in range(self.n_agents)], dtype=np.float32)[None]
+        g   = info["uav_0"]["global_obs"][None]
+        return obs, g
+    
+    def step(self, actions_batch: np.ndarray):
+        """Args: actions_batch [n_envs, n_agents, 3]"""
+        if self._is_vec:
+            return self._env.step(actions_batch)
+        
+        act_dict = {f"uav_{i}": actions_batch[0][i] for i in range(self.n_agents)}
         obs_d, rew_d, term_d, trunc_d, info = self._env.step(act_dict)
-
-        obs  = self._dict2arr(obs_d)[None]                       # [1,n,o]
-        g    = info['uav_0']['global_obs'][None]                  # [1,g]
-        rews = np.array(
-            [rew_d[f'uav_{i}'] for i in range(self.n_agents)],
-            dtype=np.float32
-        )[None]                                                   # [1,n]
-
-        # ✅ [F3] Tách terminated vs truncated
-        terminated = any(term_d.values())
-        truncated  = any(trunc_d.values())
-        done       = terminated or truncated
-
-        # info chuẩn hóa: list of dict
+        
+        obs  = np.array([obs_d.get(f"uav_{i}", np.zeros(self.obs_dim, np.float32)) for i in range(self.n_agents)], dtype=np.float32)[None]
+        g    = info["uav_0"]["global_obs"][None]
+        rews = np.array([rew_d.get(f"uav_{i}", 0.0) for i in range(self.n_agents)], dtype=np.float32)[None]
+        done = any(term_d.values()) or any(trunc_d.values())
         return obs, g, rews, [done], [info]
-
-    # ── Helpers ─────────────────────────────────────────────────
-
-    def _dict2arr(self, obs_dict: Dict) -> np.ndarray:
-        return np.array(
-            [obs_dict[f'uav_{i}'] for i in range(self.n_agents)],
-            dtype=np.float32
-        )
-
-    def rebuild(self, config: AppConfig, seed: Optional[int] = None):
-        """Rebuild sau curriculum advance."""
-        self.close()
-        s = seed if seed is not None else self._seed
-        self._env = self._build(config, self.n_envs, s)
-
-    def render(self) -> Optional[np.ndarray]:
-        if self.n_envs == 1:
+    
+    def render(self):
+        """Chỉ single env support."""
+        if not self._is_vec and hasattr(self._env, "render"):
             return self._env.render()
         return None
-
+    
     def close(self):
         try:
             self._env.close()
-        except Exception:
+        except:
             pass
 
 
-# ════════════════════════════════════════════════════════════════
-# MAPPO TRAINER
-# ════════════════════════════════════════════════════════════════
-
 class MAPPOTrainer:
-    """
-    MAPPO Trainer v3 — Cloud-Compatible, Unified Rollout.
-
-    Changes vs old version:
-        [F1] force_print=True → _FakePbar (Kaggle safe)
-        [F2] _rollout() unified — không còn _single/_vectorized fork
-        [F3] GAE: last_done = terminated only (correct RL theory)
-        [F4] pbar.update() chỉ trong main process (không bao giờ từ worker)
-        [F5] _EnvWrapper: unified interface
-
-    Giữ nguyên:
-        buffer, actor, critic, networks  (không thay đổi gì)
-    """
-
-    def __init__(
-        self,
-        config: AppConfig,
-        device: str = "cpu",
-        run_name: Optional[str] = None,
-        n_envs: int = 1,
-    ):
-        self.config  = config
-        self.device  = torch.device(device)
-        self.n_envs  = n_envs
+    """MAPPO Trainer với tqdm progress bar theo episodes."""
+    
+    def __init__(self, config: AppConfig, device: str = "auto", run_name: str = None, n_envs: int = 1):
+        self.config = config
+        self.n_envs = n_envs
         self.run_name = run_name or f"mappo_{int(time.time())}"
-
-        # Dims
+        
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
+        
         self.n_agents       = config.env.n_uav
         self.obs_dim        = config.obs.actor_dim
         self.global_obs_dim = config.obs.critic_dim
-        self.action_dim     = 3
-
-        # Hyperparams
+        
         tr = config.train
         self.rollout_length = tr.mappo_rollout_length
         self.n_epochs       = tr.mappo_n_epochs
@@ -285,146 +100,118 @@ class MAPPOTrainer:
         self.gae_lambda     = tr.mappo_gae_lambda
         self.max_grad_norm  = tr.mappo_max_grad_norm
         self.entropy_coeff  = tr.mappo_entropy_coeff
-        self.log_interval        = tr.mappo_log_interval
-        self.viz_interval        = tr.mappo_viz_interval
-        self.checkpoint_interval = tr.mappo_checkpoint_interval
-
+        
         # Networks
         self.actor = ActorNetwork(
-            obs_dim=self.obs_dim,
-            action_dim=self.action_dim,
+            obs_dim=self.obs_dim, action_dim=3,
             hidden_dims=tr.mappo_actor_hidden,
             activation=tr.mappo_activation,
             use_layer_norm=tr.mappo_use_layer_norm,
         ).to(self.device)
-
+        
         self.critic = CriticNetwork(
             global_obs_dim=self.global_obs_dim,
             hidden_dims=tr.mappo_critic_hidden,
             activation=tr.mappo_activation,
             use_layer_norm=tr.mappo_use_layer_norm,
         ).to(self.device)
-
-        # Optimizers
-        self.actor_opt  = torch.optim.Adam(
-            self.actor.parameters(), lr=tr.mappo_lr_actor
-        )
-        self.critic_opt = torch.optim.Adam(
-            self.critic.parameters(), lr=tr.mappo_lr_critic
-        )
-
-        # Buffer — capacity = rollout × n_envs
+        
+        self.actor_opt  = torch.optim.Adam(self.actor.parameters(),  lr=tr.mappo_lr_actor)
+        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=tr.mappo_lr_critic)
+        
+        # Buffer
+        buffer_capacity = self.rollout_length * n_envs
         self.buffer = RolloutBuffer(
-            rollout_length=self.rollout_length * self.n_envs,
+            rollout_length=buffer_capacity,
             n_agents=self.n_agents,
             obs_dim=self.obs_dim,
             global_obs_dim=self.global_obs_dim,
-            action_dim=self.action_dim,
+            action_dim=3,
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
         )
-
-        # Stats (rolling windows)
+        
+        # Stats
         self.ep_rewards  = deque(maxlen=100)
         self.ep_lengths  = deque(maxlen=100)
         self.ep_coverage = deque(maxlen=100)
         self.ep_victims  = deque(maxlen=100)
-
-        # Counters
-        self.total_episodes_done   = 0
-        self.total_steps_collected = 0
-        self.update_count          = 0
-
+        
+        self.total_episodes_done = 0
+        self.total_steps = 0
+        self.update_count = 0
+        
         # Dirs
         self.output_dir     = Path("results") / "mappo" / self.run_name
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.viz_dir        = self.output_dir / "viz"
         for d in [self.checkpoint_dir, self.viz_dir]:
             d.mkdir(parents=True, exist_ok=True)
-
+        
         self._print_init()
-
-    # ════════════════════════════════════════════════════════════
-    # PUBLIC API
-    # ════════════════════════════════════════════════════════════
-
+    
+    # ══════════════════════════════════════════════════════════════════
+    # TRAIN
+    # ══════════════════════════════════════════════════════════════════
+    
     def train(
         self,
         total_episodes: int,
-        curriculum_manager: Optional[CurriculumManager] = None,
+        curriculum_manager = None,
         seed: int = 42,
-        log_every_ep: int = 10,
-        force_print: bool = False,   # ✅ [F1] Kaggle flag
+        log_every_n_eps: int = 10,
+        viz_every_n_eps: int = 50,
+        checkpoint_every_n_eps: int = 100,
     ):
-        """
-        Main training loop.
-
-        Args:
-            total_episodes:     Target episode count
-            curriculum_manager: None = single stage (HARD)
-            seed:               RNG seed
-            log_every_ep:       Log episode every N eps
-            force_print:        True = Kaggle mode
-                                (bypass tqdm, use print+flush)
-        """
+        """Main training loop với tqdm."""
         start_time = time.time()
-
-        # ── pbar ──────────────────────────────────────────────
-        pbar = _make_tqdm(
-            total=total_episodes,
-            desc="Training",
-            force_print=force_print,
-        )
-
-        # ── env ───────────────────────────────────────────────
         env = _EnvWrapper(self.config, self.n_envs, seed)
-
-        self._print_train_header(total_episodes, curriculum_manager)
-
-        # ── Main loop ─────────────────────────────────────────
-        rollout_metrics: Dict = {}
-
+        
+        pbar = tqdm(
+            total=total_episodes,
+            desc="🚁 Training",
+            unit="ep",
+            dynamic_ncols=True,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} ep [{elapsed}<{remaining}] {postfix}",
+        )
+        
+        print(f"\n🚀 MAPPO Training")
+        print(f"  target episodes : {total_episodes}")
+        print(f"  n_envs          : {self.n_envs}")
+        print(f"  max_steps/ep    : {self.config.env.max_steps}")
+        print(f"  log every       : {log_every_n_eps} eps")
+        print(f"  viz every       : {viz_every_n_eps} eps")
+        print(f"  checkpoint every: {checkpoint_every_n_eps} eps\n")
+        
+        last_rollout: Dict = {}
+        last_train: Dict = {}
+        
         while self.total_episodes_done < total_episodes:
-
-            # ① Collect experience
-            rollout_metrics = self._rollout(
-                env,
-                pbar=pbar,
-                max_episodes=total_episodes,
-                log_every_ep=log_every_ep,
-            )
-
-            # ② PPO update
-            train_metrics = self._update()
+            # Rollout + Update
+            last_rollout = self._rollout(env, pbar, total_episodes)
+            last_train   = self._update()
             self.update_count += 1
-
-            # ③ Update pbar postfix
-            pbar.set_postfix({
-                'upd': self.update_count,
-                'rew': f"{rollout_metrics['mean_ep_reward']:+.0f}",
-                'cov': f"{rollout_metrics['mean_coverage']:.0f}%",
-                'vic': f"{rollout_metrics['mean_victims']:.0f}%",
-            }, refresh=True)
-
-            # ④ Detailed log
-            if self.update_count % self.log_interval == 0:
-                self._log_update(pbar, train_metrics, rollout_metrics, start_time)
-
-            # ⑤ Viz
-            if self.update_count % self.viz_interval == 0:
-                self._save_viz(env, self.update_count)
-
-            # ⑥ Checkpoint
-            if self.update_count % self.checkpoint_interval == 0:
-                path = self._save_checkpoint(curriculum_manager)
-                pbar.write(f"  💾 Checkpoint: {path.name}")
-
-            # ⑦ Curriculum
-            if curriculum_manager is not None and self.total_episodes_done > 0:
+            
+            # Detailed log
+            if self.total_episodes_done % log_every_n_eps == 0:
+                elapsed = time.time() - start_time
+                fps = self.total_steps / max(elapsed, 1e-6)
+                self._log_detail(pbar, last_rollout, last_train, elapsed, fps, curriculum_manager)
+            
+            # Viz
+            if viz_every_n_eps > 0 and self.total_episodes_done % viz_every_n_eps == 0:
+                self._save_viz(env, self.total_episodes_done)
+            
+            # Checkpoint
+            if self.total_episodes_done % checkpoint_every_n_eps == 0:
+                self.save_checkpoint(self.total_episodes_done, curriculum_manager)
+            
+            # Curriculum
+            if curriculum_manager and self.ep_rewards:
                 curriculum_manager.update(
-                    coverage=rollout_metrics['mean_coverage'] / 100,
-                    victims_rate=rollout_metrics['mean_victims'] / 100,
-                    reward=rollout_metrics['mean_ep_reward'],
+                    coverage=last_rollout.get("mean_coverage", 0) / 100,
+                    victims_rate=last_rollout.get("mean_victims", 0) / 100,
+                    reward=last_rollout.get("mean_ep_reward", 0),
                 )
                 if curriculum_manager.should_advance():
                     old = curriculum_manager.current_stage.name
@@ -432,359 +219,277 @@ class MAPPOTrainer:
                     new = curriculum_manager.current_stage.name
                     pbar.write(f"\n🎓 CURRICULUM: {old.upper()} → {new.upper()}\n")
                     curriculum_manager.apply_to_config(self.config)
-                    env.rebuild(self.config)
-
-        # ── Finalize ──────────────────────────────────────────
+                    env.close()
+                    env = _EnvWrapper(self.config, self.n_envs, seed)
+        
         pbar.close()
         env.close()
-
-        path = self._save_checkpoint(curriculum_manager, tag="final")
-        elapsed = time.time() - start_time
-        self._print_summary(elapsed, rollout_metrics)
-
-    # ════════════════════════════════════════════════════════════
-    # ROLLOUT — Unified (F2)
-    # ════════════════════════════════════════════════════════════
-
-    def _rollout(
-        self,
-        env: _EnvWrapper,
-        pbar,
-        max_episodes: int,
-        log_every_ep: int = 10,
-    ) -> Dict[str, float]:
-        """
-        Collect rollout_length steps từ n_envs envs.
-
-        [F2] Unified path — không còn single/vector fork.
-        EnvWrapper lo việc batching.
-
-        [F4] pbar.update() CHỈ xảy ra ở đây (main process).
-        Không bao giờ từ worker subprocess.
-        """
+        
+        self.save_checkpoint(self.total_episodes_done, curriculum_manager, tag="final")
+        self._print_final(time.time() - start_time, last_rollout)
+    
+    # ══════════════════════════════════════════════════════════════════
+    # ROLLOUT
+    # ══════════════════════════════════════════════════════════════════
+    
+    def _rollout(self, env: _EnvWrapper, pbar: tqdm, max_episodes: int) -> Dict:
         obs_batch, g_batch = env.reset()
-        # obs_batch: [n_envs, n_agents, obs_dim]
-        # g_batch:   [n_envs, global_dim]
-
-        # Per-env episode accumulators
         ep_rew = np.zeros(self.n_envs, dtype=np.float32)
         ep_len = np.zeros(self.n_envs, dtype=np.int32)
-
-        # Track last state for GAE bootstrap
-        last_g_batch  = g_batch.copy()
-        last_dones    = [False] * self.n_envs   # terminated flags only
-
+        last_g = g_batch.copy()
+        last_dones = [False] * self.n_envs
+        
         for _ in range(self.rollout_length):
-            # ── Early stop ────────────────────────────────────
             if self.total_episodes_done >= max_episodes:
                 break
-
-            # ── Batch inference ───────────────────────────────
-            # Flatten: [n_envs, n_agents, obs_dim] → [n*n, obs_dim]
+            
+            # Inference
             n = self.n_envs
             obs_flat = obs_batch.reshape(n * self.n_agents, self.obs_dim)
-            obs_t    = torch.FloatTensor(obs_flat).to(self.device)
-            g_t      = torch.FloatTensor(g_batch).to(self.device)
-
+            obs_t = torch.FloatTensor(obs_flat).to(self.device)
+            g_t   = torch.FloatTensor(g_batch).to(self.device)
+            
             with torch.no_grad():
-                actions_t, lp_t = self.actor.get_action(obs_t)
-                values_t = self.critic.get_value(g_t)   # [n_envs]
-
-            # Reshape outputs
-            act_batch = actions_t.cpu().numpy().reshape(n, self.n_agents, self.action_dim)
+                act_t, lp_t = self.actor.get_action(obs_t)
+                val_t = self.critic.get_value(g_t)
+            
+            act_batch = act_t.cpu().numpy().reshape(n, self.n_agents, 3)
             lp_batch  = lp_t.cpu().numpy().reshape(n, self.n_agents)
-            # Broadcast value [n_envs] → [n_envs, n_agents]
-            val_batch = np.repeat(
-                values_t.cpu().numpy()[:, None], self.n_agents, axis=1
-            )
-
-            # ── Step envs ─────────────────────────────────────
+            val_batch = np.repeat(val_t.cpu().numpy()[:, None], self.n_agents, axis=1)
+            
+            # Step
             next_obs, next_g, rews, dones, infos = env.step(act_batch)
-
-            # ── Process each env ──────────────────────────────
+            
+            # Store
             for ei in range(n):
                 self.buffer.add(
-                    obs        = obs_batch[ei],          # [n_agents, obs_dim]
-                    global_obs = g_batch[ei],            # [global_dim]
-                    actions    = act_batch[ei],          # [n_agents, action_dim]
-                    rewards    = rews[ei],               # [n_agents]
-                    values     = val_batch[ei],          # [n_agents]
-                    log_probs  = lp_batch[ei],           # [n_agents]
-                    done       = dones[ei],
+                    obs=obs_batch[ei], global_obs=g_batch[ei], actions=act_batch[ei],
+                    rewards=rews[ei], values=val_batch[ei], log_probs=lp_batch[ei], done=dones[ei]
                 )
-                self.total_steps_collected += 1
-                ep_rew[ei] += rews[ei][0]
+                self.total_steps += 1
+                ep_rew[ei] += float(rews[ei][0])
                 ep_len[ei] += 1
-
+                
                 if dones[ei]:
-                    # ── Extract episode info ───────────────
-                    info_ei = infos[ei]
-                    # Chuẩn hóa: single env trả dict, vec env trả dict với key 'uav_0'
-                    uav0 = info_ei.get('uav_0', info_ei)
-                    cov       = float(uav0.get('coverage_rate', 0.0)) * 100
-                    vic_found = int(uav0.get('victims_found', 0))
-                    vic_total = max(int(uav0.get('victims_total', 1)), 1)
-
-                    # ── Log stats ─────────────────────────
+                    info_ei = infos[ei] if infos[ei] else {}
+                    u0 = info_ei.get("uav_0", {})
+                    cov = float(u0.get("coverage_rate", 0.0)) * 100
+                    vf  = int(u0.get("victims_found", 0))
+                    vt  = max(int(u0.get("victims_total", 1)), 1)
+                    
                     self.ep_rewards.append(float(ep_rew[ei]))
                     self.ep_lengths.append(int(ep_len[ei]))
                     self.ep_coverage.append(cov)
-                    self.ep_victims.append(vic_found / vic_total * 100)
+                    self.ep_victims.append(vf / vt * 100)
                     self.total_episodes_done += 1
-
-                    # ── Episode log (every N) ──────────────
-                    if self.total_episodes_done % log_every_ep == 0:
-                        self._log_episode(
-                            pbar, self.total_episodes_done,
-                            float(ep_rew[ei]), cov, vic_found, vic_total,
-                            int(ep_len[ei])
-                        )
-
-                    # ── [F4] pbar.update() ONLY here ──────
+                    
+                    # Update tqdm
                     pbar.update(1)
-
-                    # Reset accumulators
+                    pbar.set_postfix(ordered_dict={
+                        "rew": f"{float(ep_rew[ei]):+.1f}",
+                        "cov": f"{cov:.1f}%",
+                        "vic": f"{vf}/{vt}",
+                        "upd": self.update_count,
+                    })
+                    
                     ep_rew[ei] = 0.0
                     ep_len[ei] = 0
-
+                    
                     if self.total_episodes_done >= max_episodes:
                         break
-
-            # Update state
-            obs_batch  = next_obs
-            g_batch    = next_g
-            last_g_batch = next_g.copy()
-
-            # ✅ [F3] last_dones = terminated only
-            # Với single env: dones[0] = terminated OR truncated
-            # Với vec env: worker handles reset, dones = True khi ep ends
-            # Cho GAE: nếu truncated → bootstrap (last_done=False)
-            # Đây là approximation đúng cho HARD stage (timeout thường xuyên)
+            
+            obs_batch = next_obs
+            g_batch   = next_g
+            last_g    = next_g.copy()
             last_dones = dones
-
-        # ── GAE Bootstrap ─────────────────────────────────────
+        
+        # GAE
         with torch.no_grad():
-            last_g_t   = torch.FloatTensor(last_g_batch).to(self.device)
-            last_vals  = self.critic.get_value(last_g_t).cpu().numpy()  # [n_envs]
-
-        # Mean across envs → [n_agents]
-        mean_val = float(np.mean(last_vals))
-        gae_last_vals = np.full(self.n_agents, mean_val, dtype=np.float32)
-
-        # ✅ [F3] last_done: chỉ True nếu TẤT CẢ envs đều terminated
-        # Thực tế: HARD stage thường truncated (timeout) → bootstrap
-        gae_last_done = all(last_dones) and (self.total_episodes_done >= max_episodes)
-        self.buffer.compute_gae(gae_last_vals, last_done=gae_last_done)
-
+            last_vals = self.critic.get_value(torch.FloatTensor(last_g).to(self.device)).cpu().numpy()
+        
+        bootstrap = np.full(self.n_agents, float(np.mean(last_vals)), dtype=np.float32)
+        self.buffer.compute_gae(bootstrap, last_done=all(last_dones))
+        
         return {
-            'mean_ep_reward': float(np.mean(self.ep_rewards))  if self.ep_rewards  else 0.0,
-            'mean_ep_length': float(np.mean(self.ep_lengths))  if self.ep_lengths  else 0.0,
-            'mean_coverage':  float(np.mean(self.ep_coverage)) if self.ep_coverage else 0.0,
-            'mean_victims':   float(np.mean(self.ep_victims))  if self.ep_victims  else 0.0,
+            "mean_ep_reward": float(np.mean(self.ep_rewards)) if self.ep_rewards else 0.0,
+            "mean_ep_length": float(np.mean(self.ep_lengths)) if self.ep_lengths else 0.0,
+            "mean_coverage":  float(np.mean(self.ep_coverage)) if self.ep_coverage else 0.0,
+            "mean_victims":   float(np.mean(self.ep_victims))  if self.ep_victims else 0.0,
         }
-
-    # ════════════════════════════════════════════════════════════
-    # PPO UPDATE — Không thay đổi logic, chỉ dùng self.actor_opt
-    # ════════════════════════════════════════════════════════════
-
-    def _update(self) -> Dict[str, float]:
-        """PPO update — pure optimization."""
+    
+    # ══════════════════════════════════════════════════════════════════
+    # UPDATE
+    # ══════════════════════════════════════════════════════════════════
+    
+    def _update(self) -> Dict:
         actor_losses, critic_losses, entropies, clip_fracs = [], [], [], []
-
+        
         for _ in range(self.n_epochs):
             for batch in self.buffer.get_batches(self.batch_size):
-                obs        = torch.FloatTensor(batch['obs']).to(self.device)
-                g_obs      = torch.FloatTensor(batch['global_obs']).to(self.device)
-                actions    = torch.FloatTensor(batch['actions']).to(self.device)
-                old_lp     = torch.FloatTensor(batch['old_log_probs']).to(self.device)
-                advantages = torch.FloatTensor(batch['advantages']).to(self.device)
-                returns    = torch.FloatTensor(batch['returns']).to(self.device)
-
-                # ── Actor ─────────────────────────────────────
-                log_probs, entropy = self.actor.evaluate_actions(obs, actions)
-                ratio  = torch.exp(log_probs - old_lp)
-                surr1  = ratio * advantages
-                surr2  = torch.clamp(
-                    ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon
-                ) * advantages
-                a_loss = (
-                    -torch.min(surr1, surr2).mean()
-                    - self.entropy_coeff * entropy.mean()
-                )
-
+                obs     = torch.FloatTensor(batch["obs"]).to(self.device)
+                g_obs   = torch.FloatTensor(batch["global_obs"]).to(self.device)
+                actions = torch.FloatTensor(batch["actions"]).to(self.device)
+                old_lp  = torch.FloatTensor(batch["old_log_probs"]).to(self.device)
+                adv     = torch.FloatTensor(batch["advantages"]).to(self.device)
+                returns = torch.FloatTensor(batch["returns"]).to(self.device)
+                
+                # Actor
+                lp, entropy = self.actor.evaluate_actions(obs, actions)
+                ratio = torch.exp(lp - old_lp)
+                surr1 = ratio * adv
+                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv
+                a_loss = -torch.min(surr1, surr2).mean() - self.entropy_coeff * entropy.mean()
+                
                 self.actor_opt.zero_grad()
                 a_loss.backward()
                 nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                 self.actor_opt.step()
-
-                # ── Critic ────────────────────────────────────
+                
+                # Critic
                 values = self.critic.get_value(g_obs)
                 c_loss = nn.functional.mse_loss(values, returns)
-
+                
                 self.critic_opt.zero_grad()
                 c_loss.backward()
                 nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                 self.critic_opt.step()
-
-                # Metrics
+                
                 actor_losses.append(a_loss.item())
                 critic_losses.append(c_loss.item())
                 entropies.append(entropy.mean().item())
                 with torch.no_grad():
-                    clip_fracs.append(
-                        ((ratio - 1.0).abs() > self.clip_epsilon).float().mean().item()
-                    )
-
+                    clip_fracs.append(((ratio - 1.0).abs() > self.clip_epsilon).float().mean().item())
+        
         self.buffer.clear()
-
+        
         return {
-            'actor_loss':    float(np.mean(actor_losses)),
-            'critic_loss':   float(np.mean(critic_losses)),
-            'entropy':       float(np.mean(entropies)),
-            'clip_fraction': float(np.mean(clip_fracs)),
+            "actor_loss": float(np.mean(actor_losses)),
+            "critic_loss": float(np.mean(critic_losses)),
+            "entropy": float(np.mean(entropies)),
+            "clip_fraction": float(np.mean(clip_fracs)),
         }
-
-    # ════════════════════════════════════════════════════════════
-    # CHECKPOINT
-    # ════════════════════════════════════════════════════════════
-
-    def _save_checkpoint(
-        self,
-        curriculum_manager: Optional[CurriculumManager] = None,
-        tag: Optional[str] = None,
-    ) -> Path:
-        name = (
-            f"checkpoint_{tag}.pt" if tag
-            else f"checkpoint_upd{self.update_count:05d}.pt"
-        )
-        path = self.checkpoint_dir / name
-        ckpt = {
-            'update':                self.update_count,
-            'total_episodes_done':   self.total_episodes_done,
-            'total_steps_collected': self.total_steps_collected,
-            'actor_state_dict':      self.actor.state_dict(),
-            'critic_state_dict':     self.critic.state_dict(),
-            'actor_opt_state_dict':  self.actor_opt.state_dict(),
-            'critic_opt_state_dict': self.critic_opt.state_dict(),
-            'ep_rewards':            list(self.ep_rewards),
-            'ep_coverage':           list(self.ep_coverage),
-            'ep_victims':            list(self.ep_victims),
-        }
-        if curriculum_manager:
-            ckpt['curriculum_stage'] = curriculum_manager.stage_idx
-        torch.save(ckpt, path)
-        return path
-
-    def load_checkpoint(self, path: str) -> int:
-        ckpt = torch.load(path, map_location=self.device)
-        self.actor.load_state_dict(ckpt['actor_state_dict'])
-        self.critic.load_state_dict(ckpt['critic_state_dict'])
-        self.actor_opt.load_state_dict(ckpt['actor_opt_state_dict'])
-        self.critic_opt.load_state_dict(ckpt['critic_opt_state_dict'])
-        self.total_episodes_done   = ckpt.get('total_episodes_done', 0)
-        self.total_steps_collected = ckpt.get('total_steps_collected', 0)
-        self.update_count          = ckpt.get('update', 0)
-        print(f"✅ Loaded checkpoint: update={self.update_count}", flush=True)
-        return self.update_count
-
-    # ════════════════════════════════════════════════════════════
-    # VIZ
-    # ════════════════════════════════════════════════════════════
-
-    def _save_viz(self, env: _EnvWrapper, update: int):
-        frame = env.render()
-        if frame is None:
-            return
-        try:
-            import matplotlib
-            matplotlib.use('Agg')   # Non-interactive backend
-            import matplotlib.pyplot as plt
-            fig, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(frame)
-            ax.axis('off')
-            ax.set_title(f"Update {update} | Ep {self.total_episodes_done}")
-            path = self.viz_dir / f"update_{update:05d}.png"
-            plt.savefig(path, bbox_inches='tight', dpi=100)
-            plt.close(fig)
-        except Exception as e:
-            print(f"  ⚠️  Viz failed: {e}", flush=True)
-
-    # ════════════════════════════════════════════════════════════
-    # LOGGING HELPERS
-    # ════════════════════════════════════════════════════════════
-
-    def _log_episode(
-        self, pbar,
-        ep_num: int, reward: float, cov: float,
-        vic_found: int, vic_total: int, steps: int,
-    ):
-        icon = "🟢" if reward > 200 else "🟡" if reward > 0 else "🔴"
-        vic_rate = vic_found / max(vic_total, 1) * 100
-        msg = (
-            f"{icon} Ep {ep_num:>5d} | "
-            f"Rew: {reward:+7.1f} | "
-            f"Cov: {cov:5.1f}% | "
-            f"Vic: {vic_found}/{vic_total} ({vic_rate:.0f}%) | "
-            f"Steps: {steps}"
-        )
-        pbar.write(msg)
-
-    def _log_update(self, pbar, train_m, rollout_m, start_time):
-        elapsed = time.time() - start_time
-        fps     = self.total_steps_collected / max(elapsed, 1e-6)
-        lines   = [
+    
+    # ══════════════════════════════════════════════════════════════════
+    # LOGGING & VIZ
+    # ══════════════════════════════════════════════════════════════════
+    
+    def _log_detail(self, pbar, rollout, train, elapsed, fps, curriculum_manager):
+        lines = [
             f"\n{'─'*60}",
-            f"📊 Update {self.update_count} | "
-            f"Ep {self.total_episodes_done}",
+            f"📊 Episode {self.total_episodes_done} | Update {self.update_count}",
             f"{'─'*60}",
-            f"  Task  | Rew: {rollout_m['mean_ep_reward']:+8.2f} | "
-            f"Cov: {rollout_m['mean_coverage']:5.1f}% | "
-            f"Vic: {rollout_m['mean_victims']:5.1f}%",
-            f"  Train | Actor: {train_m['actor_loss']:7.4f} | "
-            f"Critic: {train_m['critic_loss']:7.4f} | "
-            f"Entropy: {train_m['entropy']:6.4f} | "
-            f"Clip: {train_m['clip_fraction']:.3f}",
-            f"  Perf  | FPS: {fps:6.1f} | "
-            f"Steps: {self.total_steps_collected:,} | "
-            f"Time: {elapsed/60:.1f}min",
-            f"{'─'*60}",
+            f"  Task:",
+            f"    reward   : {rollout['mean_ep_reward']:+8.2f}",
+            f"    coverage : {rollout['mean_coverage']:7.2f}%",
+            f"    victims  : {rollout['mean_victims']:7.2f}%",
+            f"    ep_len   : {rollout['mean_ep_length']:7.1f}",
+            f"  Train:",
+            f"    a_loss   : {train['actor_loss']:.4f}",
+            f"    c_loss   : {train['critic_loss']:.4f}",
+            f"    entropy  : {train['entropy']:.4f}",
+            f"    clip_frac: {train['clip_fraction']:.3f}",
+            f"  Perf:",
+            f"    fps      : {fps:.1f}",
+            f"    elapsed  : {elapsed/60:.1f} min",
         ]
+        
+        if curriculum_manager:
+            stage = curriculum_manager.current_stage
+            lines += [
+                f"  Curriculum:",
+                f"    stage    : {stage.name.upper()}",
+                f"    map_size : {stage.map_size}m",
+            ]
+        
+        lines.append(f"{'─'*60}\n")
         for line in lines:
             pbar.write(line)
-
+    
+    def _save_viz(self, env: _EnvWrapper, episode: int):
+        """Lưu 2D viz (chỉ single env)."""
+        if env.n_envs > 1:
+            return
+        
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            
+            frame = env.render()
+            if frame is None:
+                return
+            
+            fig, ax = plt.subplots(figsize=(10, 10))
+            ax.imshow(frame)
+            ax.axis("off")
+            ax.set_title(f"Episode {episode}", fontsize=14)
+            
+            path = self.viz_dir / f"ep_{episode:06d}.png"
+            fig.savefig(path, bbox_inches="tight", dpi=100)
+            plt.close(fig)
+        except:
+            pass
+    
+    # ══════════════════════════════════════════════════════════════════
+    # CHECKPOINT
+    # ══════════════════════════════════════════════════════════════════
+    
+    def save_checkpoint(self, episode: int, curriculum_manager=None, tag: str = None):
+        name = f"checkpoint_{tag}.pt" if tag else f"checkpoint_ep{episode:06d}.pt"
+        path = self.checkpoint_dir / name
+        torch.save({
+            "episode": episode,
+            "update": self.update_count,
+            "total_episodes_done": self.total_episodes_done,
+            "actor_state_dict": self.actor.state_dict(),
+            "critic_state_dict": self.critic.state_dict(),
+            "actor_optimizer_state_dict": self.actor_opt.state_dict(),
+            "critic_optimizer_state_dict": self.critic_opt.state_dict(),
+            "ep_rewards": list(self.ep_rewards),
+            "ep_coverage": list(self.ep_coverage),
+            "ep_victims": list(self.ep_victims),
+            "curriculum_stage": curriculum_manager.stage_idx if curriculum_manager else 0,
+        }, path)
+    
+    def load_checkpoint(self, path: str) -> int:
+        ckpt = torch.load(path, map_location=self.device)
+        self.actor.load_state_dict(ckpt["actor_state_dict"])
+        self.critic.load_state_dict(ckpt["critic_state_dict"])
+        self.actor_opt.load_state_dict(ckpt["actor_optimizer_state_dict"])
+        self.critic_opt.load_state_dict(ckpt["critic_optimizer_state_dict"])
+        self.total_episodes_done = ckpt.get("total_episodes_done", 0)
+        self.update_count = ckpt.get("update", 0)
+        return ckpt.get("episode", 0)
+    
+    # ══════════════════════════════════════════════════════════════════
+    # HELPERS
+    # ══════════════════════════════════════════════════════════════════
+    
     def _print_init(self):
         print(f"\n{'='*60}")
-        print(f"🚁 MAPPO Trainer v3")
+        print(f"🚁 MAPPO Trainer")
         print(f"{'='*60}")
-        print(f"  Device:        {self.device}")
-        print(f"  Run name:      {self.run_name}")
-        print(f"  n_envs:        {self.n_envs}")
-        print(f"  Actor params:  {sum(p.numel() for p in self.actor.parameters()):,}")
-        print(f"  Critic params: {sum(p.numel() for p in self.critic.parameters()):,}")
-        print(f"  Buffer cap:    {self.rollout_length * self.n_envs:,}")
-        print(f"  Output:        {self.output_dir}")
-        print(f"{'='*60}\n", flush=True)
-
-    def _print_train_header(self, total_eps, curriculum_manager):
-        print(f"\n{'='*60}")
-        print(f"🚀 MAPPO Training Start")
-        print(f"{'='*60}")
-        print(f"  Target:     {total_eps} episodes")
-        print(f"  Rollout:    {self.rollout_length} × {self.n_envs} envs")
-        print(f"  Batch:      {self.batch_size}")
-        print(f"  Curriculum: {'ON' if curriculum_manager else 'OFF (HARD only)'}")
-        print(f"{'='*60}\n", flush=True)
-
-    def _print_summary(self, elapsed, rollout_m):
+        print(f"  device   : {self.device}")
+        print(f"  run_name : {self.run_name}")
+        print(f"  n_envs   : {self.n_envs}")
+        print(f"  n_agents : {self.n_agents}")
+        print(f"  actor    : {sum(p.numel() for p in self.actor.parameters()):,} params")
+        print(f"  critic   : {sum(p.numel() for p in self.critic.parameters()):,} params")
+        print(f"  buffer   : {self.rollout_length * self.n_envs:,} steps")
+        print(f"  output   : {self.output_dir}")
+        print(f"{'='*60}\n")
+    
+    def _print_final(self, elapsed: float, metrics: Dict):
         print(f"\n{'='*60}")
         print(f"✅ Training Complete!")
-        print(f"  Episodes: {self.total_episodes_done}")
-        print(f"  Updates:  {self.update_count}")
-        print(f"  Steps:    {self.total_steps_collected:,}")
-        print(f"  Time:     {elapsed/60:.1f} min")
-        print(f"  FPS:      {self.total_steps_collected/max(elapsed,1):.1f}")
-        if rollout_m:
-            print(f"  Reward:   {rollout_m['mean_ep_reward']:.2f}")
-            print(f"  Coverage: {rollout_m['mean_coverage']:.2f}%")
-            print(f"  Victims:  {rollout_m['mean_victims']:.2f}%")
-        print(f"{'='*60}\n", flush=True)
+        print(f"{'='*60}")
+        print(f"  episodes : {self.total_episodes_done:,}")
+        print(f"  updates  : {self.update_count:,}")
+        print(f"  steps    : {self.total_steps:,}")
+        print(f"  time     : {elapsed/60:.1f} min")
+        if metrics:
+            print(f"  reward   : {metrics.get('mean_ep_reward', 0):.2f}")
+            print(f"  coverage : {metrics.get('mean_coverage', 0):.2f}%")
+            print(f"  victims  : {metrics.get('mean_victims', 0):.2f}%")
+        print(f"  ckpt     : {self.checkpoint_dir}/checkpoint_final.pt")
+        print(f"{'='*60}\n")

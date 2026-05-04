@@ -227,13 +227,14 @@ class SARPettingZooEnv(ParallelEnv):
         
         current_agents = list(observations.keys())
         
-        terminations = {agent: done for agent in current_agents}
-        truncations = {agent: truncated for agent in current_agents}
-        infos = {agent: info.copy() for agent in current_agents}
+        all_agents_for_signal = self.possible_agents
+
+        terminations = {agent: done     for agent in all_agents_for_signal}
+        truncations  = {agent: truncated for agent in all_agents_for_signal}
+        infos        = {agent: info.copy() for agent in all_agents_for_signal}
         
-        # Update agents list (remove terminated agents)
         if done or truncated:
-            self.agents = []  # All agents done
+            self.agents = []
         else:
             self.agents = current_agents
         
