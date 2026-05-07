@@ -133,7 +133,7 @@ class SARPettingZooEnv(ParallelEnv):
             agent: spaces.Box(
                 low=-1.0,
                 high=1.0,
-                shape=(3,),  # (vx, vy, vz)
+                shape=(4,),  # (vx, vy, vz)
                 dtype=np.float32,
             )
             for agent in self.possible_agents

@@ -4,115 +4,118 @@ from dataclasses import dataclass
 @dataclass
 class RewardConfig:
     """
-    Reward function configuration for SAR task.
-
-    REBALANCED v3 - Research-grade:
-        Based on random policy baseline + multi-agent RL stability
+    Reward v4.0 - Anti-exploit redesign
+    
+    CORE PHILOSOPHY:
+        Reward phải PROPORTIONAL với task progress
+        Coverage 28% → reward thấp
+        Coverage 80% → reward cao
+        Landing là NECESSARY ACTION, không phải goal
+    
+    EXPLOIT FIX:
+        v3.x: landing = 20 + early_bonus(50) = +70 max
+              → Agent farm landing thay vì explore
         
-        Design principles:
-            1. Sparse signals (coverage, victim) > Dense penalties
-            2. No reward saturation (clip bounds wide enough)
-            3. Step penalty cap to prevent single-step collapse
-            4. Multi-agent aware (proximity normalized by pair count)
-
+        v4.0: landing = 5 (fixed, no bonus)
+              coverage_delta tăng mạnh để dominate
+              Approach/hover reward giảm về 0
+    
+    
     """
-    # ══════════════════════════════════════════════════════════
-    # 1. COVERAGE REWARD (dense, incremental)
-    # ══════════════════════════════════════════════════════════
-    r_coverage_delta: float = 6.0 
-    # Reward per 1% coverage increase
-    # Max per episode: +600 (100% coverage) - achievable but not trivial
-    # Expected with random (55%): ~330
+    # ══════════════════════════════════════════════════════
+    # COVERAGE - DOMINANT SIGNAL (tăng mạnh từ 15 → 30)
+    # Lý do: Coverage phải là signal CHÍNH
+    # 1% coverage → +0.30 per step
+    # Agent explore toàn map → +3000 per episode
+    # ══════════════════════════════════════════════════════
+    r_coverage_delta: float = 30.0
 
-    # ══════════════════════════════════════════════════════════
-    # 2. VICTIM DISCOVERY REWARD (sparse, high value)
-    # ══════════════════════════════════════════════════════════
-    r_victim_base: float = 30.0  # UNCHANGED
-    # Base × (urgency / 5.0)
-    # Range: +10 (urgency=1) to +50 (urgency=5)
-    # Expected with random (53%, avg urgency=3): ~318
+    # ══════════════════════════════════════════════════════
+    # VICTIM - IMPORTANT SIGNAL
+    # urgency 5.0 → +50.0 (giữ nguyên)
+    # urgency 1.0 → +10.0
+    # ══════════════════════════════════════════════════════
+    r_victim_base: float = 50.0
 
-    # ══════════════════════════════════════════════════════════
-    # 3. BATTERY PENALTIES (progressive)
-    # ══════════════════════════════════════════════════════════
-    r_battery_20: float = -0.5       # ✅ CHANGED: -0.5 → 0.0 (remove early penalty)
-    r_battery_10: float = -5.0      # ✅ CHANGED: -1.5 → -1.0 (reduce)
-    r_battery_5: float = -20.0       # UNCHANGED (critical zone)
-    r_battery_dead: float = -100.0  # UNCHANGED (one-time)
+    # ══════════════════════════════════════════════════════
+    # TERMINAL
+    # ══════════════════════════════════════════════════════
+    r_terminal_base:    float = 300.0
+    terminal_bonus_cap: float = 200.0
 
-    # Rationale:
-    # - Remove penalty at 20% → encourage exploration
-    # - Keep strong penalty at <10% → force return behavior
-    # - Dead penalty prevents catastrophic failure
+    # ══════════════════════════════════════════════════════
+    # BATTERY PENALTIES (giảm để không dominate)
+    # Chỉ cần đủ để agent "feel pain", không quá lớn
+    # ══════════════════════════════════════════════════════
+    r_battery_20:   float = -0.5    # Nhẹ, chỉ warning
+    r_battery_10:   float = -2.0    # Moderate
+    r_battery_5:    float = -8.0    # Severe
+    r_battery_dead: float = -50.0   # One-time, đau
 
-    # ══════════════════════════════════════════════════════════
-    # 4. COLLISION PENALTY (one-time per obstacle)
-    # ══════════════════════════════════════════════════════════
-    r_collision_obstacle: float = -35.0  # UNCHANGED
+    # ══════════════════════════════════════════════════════
+    # COLLISION
+    # ══════════════════════════════════════════════════════
+    r_collision_obstacle: float = -15.0
 
-    # ══════════════════════════════════════════════════════════
-    # 5. DANGER ZONE PENALTY (per step inside zone)
-    # ══════════════════════════════════════════════════════════
-    # Applied via DangerZoneConfig.penalties (already rebalanced)
+    # ══════════════════════════════════════════════════════
+    # PROXIMITY
+    # ══════════════════════════════════════════════════════
+    r_proximity_1m:        float = -1.0
+    r_proximity_2m:        float = -0.3
+    r_proximity_3m:        float = -0.05
+    proximity_penalty_cap: float = -3.0
 
-    # ══════════════════════════════════════════════════════════
-    # 6. PROXIMITY PENALTY (multi-threshold, per UAV pair)
-    # ══════════════════════════════════════════════════════════
-    r_proximity_1m: float = -10.0   # UNCHANGED
-    r_proximity_2m: float = -3.0    # UNCHANGED
-    r_proximity_3m: float = -0.5    # UNCHANGED
-    
-    # ✅ NEW: Proximity cap (per step, total across all pairs)
-    proximity_penalty_cap: float = -15.0
-    # Prevents proximity spam from dominating signal
-    # With 6 pairs: worst case -60 → capped at -15
+    # ══════════════════════════════════════════════════════
+    # TIME
+    # ══════════════════════════════════════════════════════
+    r_time_penalty: float = -0.2
 
-    # ══════════════════════════════════════════════════════════
-    # 7. FLEET MANAGEMENT INCENTIVES (deprecated - set to 0)
-    # ══════════════════════════════════════════════════════════
-    r_fleet_deploy: float = 0.0  
-    r_fleet_recall: float = 0.0   
-    
-    # Rationale: Fleet behavior should emerge from RL, not hand-crafted
+    # ══════════════════════════════════════════════════════
+    # LANDING REWARDS - v4.0 REDESIGN
+    #
+    # BEFORE (v3.x):
+    #   r_landing_success = 20 (hardcoded)
+    #   early_bonus = up to +50 (EXPLOIT!)
+    #   approach_weight = 0.5 (too high)
+    #
+    # AFTER (v4.0):
+    #   r_landing_success = 5 (small, no bonus)
+    #   early_bonus = REMOVED
+    #   approach_weight = 0.05 (tiny, just nudge)
+    #   hover_penalty = -2.0 (giữ anti-hover)
+    #
+    # RATIONALE:
+    #   Landing là survival action, không phải goal
+    #   Agent phải land VÌ pin thấp, không vì reward
+    #   5 reward = 1/10 victim urgency avg (đúng proportion)
+    # ══════════════════════════════════════════════════════
+    r_landing_success: float = 5.0    # Giảm từ 20 → 5
+    r_approach_weight: float = 0.05   # Giảm từ 0.5 → 0.05
+    r_hover_penalty:   float = -2.0   # Giảm từ -3 → -2
 
-    # ══════════════════════════════════════════════════════════
-    # 8. TIME PENALTY (gentle pressure)
-    # ══════════════════════════════════════════════════════════
-    r_time_penalty: float = -0.1   # ✅ CHANGED: -0.1 → -0.05
-    # With 4 UAVs × 300 steps: -60 total (manageable)
+    # ══════════════════════════════════════════════════════
+    # CAPS
+    # step_penalty_cap: -8.0 (nới rộng một chút)
+    # step clip: giữ rộng để không miss signals
+    # ══════════════════════════════════════════════════════
+    step_penalty_cap: float = -8.0
 
-    # ══════════════════════════════════════════════════════════
-    # 9. TERMINAL BONUS (mission success)
-    # ══════════════════════════════════════════════════════════
-    r_terminal_base: float = 200.0  # UNCHANGED
-    terminal_bonus_cap: float = 100.0  # ✅ CHANGED: 50 → 100 (more meaningful)
+    step_reward_clip_min: float = -30.0
+    step_reward_clip_max: float = +200.0
 
-    # ══════════════════════════════════════════════════════════
-    # 10. REWARD CLIPPING & CAPPING
-    # ══════════════════════════════════════════════════════════
-    
-    # ✅ CRITICAL: Step penalty cap (applied BEFORE clipping)
-    # Step penalty cap (applied BEFORE clipping)
-    step_penalty_cap: float = -30.0
-    
-    # Step-level clip (WIDENED to prevent saturation)
-    step_reward_clip_min: float = -100.0
-    step_reward_clip_max: float = +100.0
-    
-    # ✅ FIX 3.4: Episode-level clip (FOR LOGGING/ANALYSIS ONLY - does NOT affect learning)
-    # These bounds are used for:
-    #   - Extreme episode detection logging
-    #   - Result visualization scaling
-    #   - Statistical outlier filtering
-    # They are NOT enforced during training (would bias gradient)
-    episode_reward_clip_min: float = -800.0
-    episode_reward_clip_max: float = +600.0
+    # ══════════════════════════════════════════════════════
+    # SHAPING
+    # distance_shaping_max giảm vì coverage đã tăng
+    # ══════════════════════════════════════════════════════
+    enable_distance_shaping:      bool  = True
+    distance_shaping_max_per_uav: float = 2.0   # Giảm từ 3.0 → 2.0
 
-    # ══════════════════════════════════════════════════════════
-    # 11. DISTANCE SHAPING (sparse → dense bridge)
-    # ══════════════════════════════════════════════════════════
-    enable_distance_shaping: bool = True   # ✅ NEW: toggleable
-    distance_shaping_max_per_uav: float = 1.0  # UNCHANGED
-    
-    # Future: implement distance-delta shaping to avoid local optimum
-    # (requires state memory)
+    # ══════════════════════════════════════════════════════
+    # FLEET (deprecated)
+    # ══════════════════════════════════════════════════════
+    r_fleet_deploy: float = 0.0
+    r_fleet_recall: float = 0.0
+
+    # Episode clip (logging only)
+    episode_reward_clip_min: float = -5000.0
+    episode_reward_clip_max: float = +10000.0

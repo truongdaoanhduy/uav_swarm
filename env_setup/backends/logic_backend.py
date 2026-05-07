@@ -111,23 +111,129 @@ class LogicBackend(BaseBackend):
     # APPLY ACTIONS
     # ══════════════════════════════════════════════════════════════════════
 
-    def apply_actions(self, actions: dict[int, np.ndarray]) -> None:
-        """Apply velocity commands to UAVs."""
-        for uav in self.uavs:
-            if uav.state == UAVState.ACTIVE:
-                action = actions.get(uav.id, np.zeros(3, dtype=np.float32))
-                action = np.clip(action, -1.0, 1.0).astype(np.float64)
-                uav.apply_action(action)
+    def _find_nearest_station_in_range(
+        self,
+        uav,
+        range_m: float,
+    ):
+        """
+        Tìm station gần nhất trong range_m.
+        Returns None nếu không có station nào trong range.
+        """
+        best      = None
+        best_dist = float("inf")
 
-            elif uav.state in (UAVState.RETURNING, UAVState.DEPLOYING):
-                if uav.target_station is not None:
-                    uav.auto_navigate(uav.target_station.pos)
+        for station in self.stations:
+            dx   = float(uav.pos[0]) - float(station.pos[0])
+            dy   = float(uav.pos[1]) - float(station.pos[1])
+            dist = float(np.sqrt(dx * dx + dy * dy))
+
+            if dist <= range_m and dist < best_dist:
+                best      = station
+                best_dist = dist
+
+        return best
+
+    # env_setup/backends/logic_backend.py
+
+    def apply_actions(self, actions: dict[int, np.ndarray]) -> None:
+        """
+        Apply velocity commands + landing signal to UAVs.
+
+        Action format: [vx, vy, vz, land]
+            - [vx, vy, vz] ∈ [-1, 1]³  : movement
+            - [land]       ∈ {0.0, 1.0} : landing intent
+
+        Landing logic (ALL conditions must hold):
+            1. land > 0.5           → agent muốn land
+            2. state == ACTIVE      → chỉ active mới được land
+            3. station available    → có station gần
+            4. battery ≤ 60%        → ✅ FIX: chỉ land khi cần (tránh land ở 96%)
+            
+        Note:
+            - land=1 nhưng battery > 60% → move bình thường (ignore land)
+            - land=1 nhưng không có station → move bình thường
+        """
+        # ✅ FIX: Battery threshold để prevent random landing
+        LANDING_BATTERY_THRESHOLD = 40.0  # %
+        
+        for uav in self.uavs:
+
+            if uav.state == UAVState.ACTIVE:
+                action = actions.get(uav.id, np.zeros(4, dtype=np.float32))
+                action = np.clip(action, -1.0, 1.0).astype(np.float64)
+
+                move_action = action[:3]    # [vx, vy, vz]
+                land_signal = float(action[3])
+
+                # ✅ Landing conditions
+                wants_to_land = land_signal > 0.5
+
+                if wants_to_land:
+                    # Tìm station gần nhất
+                    nearest = uav.find_nearest_station(self.stations)
+                    
+                    if nearest is not None:
+                        # ✅ FIX: Chỉ land khi battery ≤ threshold
+                        if uav.battery <= LANDING_BATTERY_THRESHOLD:
+                            # Hạ cánh: navigate xuống station
+                            target = np.array([
+                                nearest.pos[0],
+                                nearest.pos[1],
+                                0.0,   # Ground level
+                            ], dtype=np.float64)
+                            uav.auto_navigate(target)
+                            uav.target_station = nearest
+                            uav.set_state(UAVState.RETURNING)
+                            
+                            logger.debug(
+                                "UAV %d landing accepted: battery=%.1f%% ≤ %.1f%%",
+                                uav.id, uav.battery, LANDING_BATTERY_THRESHOLD
+                            )
+                        else:
+                            # Pin còn nhiều → ignore land signal
+                            uav.apply_action(move_action)
+                            
+                            # Log 1 lần per episode để debug (không spam)
+                            if not hasattr(uav, '_logged_high_battery_land'):
+                                logger.debug(
+                                    "UAV %d land rejected: battery=%.1f%% > %.1f%% "
+                                    "(ignored, apply move)",
+                                    uav.id, uav.battery, LANDING_BATTERY_THRESHOLD
+                                )
+                                uav._logged_high_battery_land = True
+                    else:
+                        # Không có station → move bình thường
+                        uav.apply_action(move_action)
                 else:
-                    # Fallback: navigate về station gần nhất
+                    # Normal movement
+                    uav.apply_action(move_action)
+                    
+            elif uav.state == UAVState.RETURNING:
+                if uav.target_station is not None:
+                    target = np.array([
+                        uav.target_station.pos[0],
+                        uav.target_station.pos[1],
+                        0.0,
+                    ], dtype=np.float64)
+                    uav.auto_navigate(target)
+                else:
+                    # Fallback: tìm nearest nếu target bị mất
                     nearest = uav.find_nearest_station(self.stations)
                     if nearest is not None:
-                        uav.auto_navigate(nearest.pos)
+                        target = np.array([
+                            nearest.pos[0],
+                            nearest.pos[1],
+                            0.0,
+                        ], dtype=np.float64)
+                        uav.auto_navigate(target)
+                        uav.target_station = nearest
 
+            elif uav.state == UAVState.DEPLOYING:
+                # Simple: chuyển ACTIVE ngay
+                uav.set_state(UAVState.ACTIVE)
+                uav.target_station = None
+                
             # CHARGING / DISABLED: no movement
 
     # ══════════════════════════════════════════════════════════════════════
@@ -135,36 +241,38 @@ class LogicBackend(BaseBackend):
     # ══════════════════════════════════════════════════════════════════════
 
     def step_physics(self) -> None:
-        """
-        Update physics: battery drain/charge.
-
-        Order:
-            CHARGING UAV → charge via station
-            Others       → drain (proportional to velocity)
-
-        NOTE: Collision detection không disable UAV ở đây.
-              Penalty chỉ tính trong reward function (BaselineReward).
-        """
         for uav in self.uavs:
             if uav.state == UAVState.DISABLED:
                 continue
 
-            if uav.state == UAVState.CHARGING:
-                # Tìm station UAV đang occupy
-                charged = False
-                for station in self.stations:
-                    if station.has_uav(uav):
-                        station.charge(uav)
-                        charged = True
-                        break
-
-                if not charged:
-                    # UAV ở state CHARGING nhưng không ở station
-                    # → drain idle (consistency)
-                    uav.update_battery(self.stations)
-            else:
+            # ✅ RETURNING → CHARGING transition
+            if uav.state == UAVState.RETURNING:
+                if uav.target_station is not None:
+                    if uav.target_station.in_range(uav.pos):
+                        if uav.target_station.try_occupy(uav):
+                            uav.set_state(UAVState.CHARGING)
+                            logger.debug(
+                                f"UAV {uav.id} → CHARGING "
+                                f"at station {uav.target_station.id}"
+                            )
+                # RETURNING vẫn drain
                 uav.update_battery(self.stations)
+                continue  # ← Skip phần dưới
 
+            # ✅ CHARGING: charge via station
+            if uav.state == UAVState.CHARGING:
+                if uav.target_station is not None:
+                    uav.target_station.charge(uav)
+                else:
+                    # Fallback: tìm station đang occupy
+                    for station in self.stations:
+                        if station.has_uav(uav):
+                            station.charge(uav)
+                            break
+                continue  # ← Skip update_battery
+
+            # ACTIVE / DEPLOYING: drain
+            uav.update_battery(self.stations)
     # ══════════════════════════════════════════════════════════════════════
     # STEP WORLD
     # ══════════════════════════════════════════════════════════════════════

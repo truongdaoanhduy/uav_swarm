@@ -1,11 +1,16 @@
 """
 training/algorithms/mappo/trainer.py
-MAPPO Trainer với tqdm + episode tracking + viz support
+MAPPO Trainer — Kaggle optimized (no viz/plot during training)
 
 FIXES:
-    ✅ FIX-T1: Checkpoint/Viz/Log dùng >= thay vì % (không miss trigger)
+    ✅ FIX-T1: Checkpoint/Log dùng >= thay vì % (không miss trigger)
     ✅ FIX-T2: Print absolute path khi save checkpoint
     ✅ FIX-T3: _next_trigger tracking cho tất cả intervals
+    ✅ FIX-P0-3: Re-compute log_prob SAU khi clip action
+    ✅ FIX-P1: Terminal obs không đưa vào buffer bước tiếp
+    ✅ FIX-P2: rews_team.reshape() thay vì squeeze()
+    ✅ FIX-K1: Xóa viz/plot — chỉ lưu checkpoint + metrics lên HF
+    ✅ FIX-K2: _all_* full history cho metrics.json
 """
 
 import os
@@ -16,9 +21,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from collections import deque
+from hf_upload import HFUploader
 
 
-# ✅ Auto-detect tqdm
 def _get_tqdm():
     try:
         shell = get_ipython().__class__.__name__
@@ -64,50 +69,97 @@ class _EnvWrapper:
 
         if n_envs == 1:
             self._env    = SARPettingZooEnv(config, render_mode=None)
-            self._env.reset(seed=seed)
             self._is_vec = False
         else:
             self._env    = VectorizedEnv(config, n_envs=n_envs, start_seed=seed)
             self._is_vec = True
 
-    def reset(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Returns: obs[n_envs, n_agents, obs_dim], global[n_envs, global_obs_dim]"""
-        if self._is_vec:
-            return self._env.reset()
+        self._current_obs:    np.ndarray | None = None
+        self._current_global: np.ndarray | None = None
+        self._needs_reset:    bool = True
 
-        obs_d, info = self._env.reset(seed=self._seed)
-        obs = np.array(
-            [obs_d[f"uav_{i}"] for i in range(self.n_agents)],
-            dtype=np.float32,
-        )[None]
-        g = info["uav_0"]["global_obs"][None]
+    def reset(self) -> tuple[np.ndarray, np.ndarray]:
+        if self._is_vec:
+            obs, g = self._env.reset()
+        else:
+            obs_d, info = self._env.reset(seed=self._seed)
+            obs = np.array(
+                [obs_d[f"uav_{i}"] for i in range(self.n_agents)],
+                dtype=np.float32,
+            )[None]
+            g = info["uav_0"]["global_obs"][None]
+
+        self._current_obs    = obs
+        self._current_global = g
+        self._needs_reset    = False
         return obs, g
 
-    def step(self, actions_batch: np.ndarray):
-        """actions_batch: [n_envs, n_agents, 3]"""
-        if self._is_vec:
-            return self._env.step(actions_batch)
+    def get_current_obs(self) -> tuple[np.ndarray, np.ndarray]:
+        if self._needs_reset or self._current_obs is None:
+            return self.reset()
+        return self._current_obs, self._current_global
 
-        act_dict = {f"uav_{i}": actions_batch[0][i] for i in range(self.n_agents)}
+    def step(self, actions_batch: np.ndarray):
+        """
+        actions_batch: [n_envs, n_agents, 4]
+        ✅ FIX-P1: Khi done=True với n_envs=1, reset ngay và cache obs mới
+        """
+        if self._is_vec:
+            obs, g, rews, dones, infos = self._env.step(actions_batch)
+            self._current_obs    = obs
+            self._current_global = g
+            return obs, g, rews, dones, infos
+
+        act_dict = {
+            f"uav_{i}": actions_batch[0][i]
+            for i in range(self.n_agents)
+        }
         obs_d, rew_d, term_d, trunc_d, info = self._env.step(act_dict)
 
-        obs = np.array(
-            [obs_d.get(f"uav_{i}", np.zeros(self.obs_dim, np.float32))
-             for i in range(self.n_agents)],
+        done = any(term_d.values()) or any(trunc_d.values())
+
+        obs_terminal = np.array(
+            [
+                obs_d.get(f"uav_{i}", np.zeros(self.obs_dim, np.float32))
+                for i in range(self.n_agents)
+            ],
             dtype=np.float32,
         )[None]
-        g    = info["uav_0"]["global_obs"][None]
+
+        g_terminal = info["uav_0"]["global_obs"][None]
+
         rews = np.array(
             [rew_d.get(f"uav_{i}", 0.0) for i in range(self.n_agents)],
             dtype=np.float32,
         )[None]
-        done = any(term_d.values()) or any(trunc_d.values())
-        return obs, g, rews, [done], [info]
 
-    def render(self):
-        if not self._is_vec and hasattr(self._env, "render"):
-            return self._env.render()
-        return None
+        dones = [done]
+        infos = [info]
+
+        if done:
+            new_seed    = int(np.random.randint(0, 2**31))
+            new_obs_d, new_info = self._env.reset(seed=new_seed)
+
+            new_obs = np.array(
+                [
+                    new_obs_d.get(f"uav_{i}", np.zeros(self.obs_dim, np.float32))
+                    for i in range(self.n_agents)
+                ],
+                dtype=np.float32,
+            )[None]
+            new_g = new_info["uav_0"]["global_obs"][None]
+
+            self._current_obs    = new_obs
+            self._current_global = new_g
+            return new_obs, new_g, rews, dones, infos
+        else:
+            self._current_obs    = obs_terminal
+            self._current_global = g_terminal
+            return obs_terminal, g_terminal, rews, dones, infos
+
+    def reset_hard(self) -> tuple[np.ndarray, np.ndarray]:
+        self._needs_reset = True
+        return self.reset()
 
     def close(self):
         try:
@@ -121,22 +173,17 @@ class _EnvWrapper:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MAPPOTrainer:
-    """
-    MAPPO Trainer.
-
-    FIXES:
-        ✅ FIX-T1: Dùng >= thay vì % để trigger checkpoint/viz/log
-                   → Không bao giờ miss dù episodes_per_update lớn
-        ✅ FIX-T2: Print absolute path khi save
-        ✅ FIX-T3: _next_*_ep tracking cho mỗi interval
-    """
+    """MAPPO Trainer — Kaggle optimized (no viz/plot during training)."""
 
     def __init__(
         self,
-        config:   AppConfig,
-        device:   str = "auto",
-        run_name: str = None,
-        n_envs:   int = 1,
+        config:          AppConfig,
+        device:          str = "auto",
+        run_name:        str = None,
+        n_envs:          int = 1,
+        hf_token:        str = None,
+        hf_repo:         str = None,
+        hf_upload_every: int = 500,
     ):
         self.config   = config
         self.n_envs   = n_envs
@@ -162,11 +209,12 @@ class MAPPOTrainer:
 
         # ── Networks ─────────────────────────────────────────────────────────
         self.actor = ActorNetwork(
-            obs_dim       = self.obs_dim,
-            action_dim    = 3,
-            hidden_dims   = tr.mappo_actor_hidden,
-            activation    = tr.mappo_activation,
-            use_layer_norm= tr.mappo_use_layer_norm,
+            obs_dim        = self.obs_dim,
+            action_dim     = 4,
+            hidden_dims    = tr.mappo_actor_hidden,
+            activation     = tr.mappo_activation,
+            use_layer_norm = tr.mappo_use_layer_norm,
+            log_std_init   = -0.5,
         ).to(self.device)
 
         self.critic = CriticNetwork(
@@ -180,42 +228,54 @@ class MAPPOTrainer:
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=tr.mappo_lr_critic)
 
         # ── Buffer ───────────────────────────────────────────────────────────
-        buffer_capacity = self.rollout_length * n_envs
         self.buffer = RolloutBuffer(
-            rollout_length = buffer_capacity,
+            rollout_length = self.rollout_length,
+            n_envs         = n_envs,
             n_agents       = self.n_agents,
             obs_dim        = self.obs_dim,
             global_obs_dim = self.global_obs_dim,
-            action_dim     = 3,
+            action_dim     = 4,
             gamma          = self.gamma,
             gae_lambda     = self.gae_lambda,
         )
 
-        # ── Stats ────────────────────────────────────────────────────────────
+        # ── Stats (rolling window) ────────────────────────────────────────────
         self.ep_rewards  = deque(maxlen=100)
         self.ep_lengths  = deque(maxlen=100)
         self.ep_coverage = deque(maxlen=100)
         self.ep_victims  = deque(maxlen=100)
 
+        # ── Full history để upload HF ─────────────────────────────────────────
+        self._all_rewards  = []
+        self._all_coverage = []
+        self._all_victims  = []
+        self._all_lengths  = []
+
+        self._persist_ep_len = np.zeros(n_envs, dtype=np.int32)
+        self._persist_ep_rew = np.zeros(n_envs, dtype=np.float32)
+
         self.total_episodes_done = 0
         self.total_steps         = 0
         self.update_count        = 0
 
-        # ✅ FIX-T3: Next trigger tracking (khởi tạo trong train())
         self._next_log_ep        = 0
-        self._next_viz_ep        = 0
         self._next_checkpoint_ep = 0
 
-        # ── Dirs ─────────────────────────────────────────────────────────────
+        # ── HF Uploader ───────────────────────────────────────────────────────
+        self.hf_uploader     = None
+        self.hf_upload_every = hf_upload_every
+        self._hf_run_name    = self.run_name
+
+        if hf_token and hf_repo:
+            self.hf_uploader = HFUploader(token=hf_token, repo_id=hf_repo)
+
+        # ── Dirs (chỉ checkpoint, không có viz) ──────────────────────────────
         is_kaggle = os.path.exists("/kaggle/working")
         base_dir  = Path("/kaggle/working/results") if is_kaggle else Path("results")
 
         self.output_dir     = base_dir / "mappo" / self.run_name
         self.checkpoint_dir = self.output_dir / "checkpoints"
-        self.viz_dir        = self.output_dir / "viz"
-
-        for d in [self.checkpoint_dir, self.viz_dir]:
-            d.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         self._print_init()
 
@@ -229,55 +289,47 @@ class MAPPOTrainer:
         curriculum_manager                = None,
         seed:                   int       = 42,
         log_every_n_eps:        int       = 10,
-        viz_every_n_eps:        int       = 50,
         checkpoint_every_n_eps: int       = 100,
     ):
-        """
-        Main training loop.
-
-        ✅ FIX-T1: Checkpoint/Viz/Log dùng >= thay vì %
-                   → Đảm bảo luôn trigger dù episodes_per_update lớn bất kỳ
-        """
         start_time = time.time()
         env        = _EnvWrapper(self.config, self.n_envs, seed)
 
-        # ✅ FIX-T3: Init next trigger points
         self._next_log_ep        = log_every_n_eps
-        self._next_viz_ep        = viz_every_n_eps        if viz_every_n_eps > 0  else 10**9
         self._next_checkpoint_ep = checkpoint_every_n_eps
 
-        # ── Print plan ───────────────────────────────────────────────────────
-        print(f"\n🚀 MAPPO Training")
+        print(f"\n🚀 MAPPO Training (Kaggle mode — no viz)")
         print(f"  target episodes  : {total_episodes:,}")
         print(f"  n_envs           : {self.n_envs}")
         print(f"  max_steps/ep     : {self.config.env.max_steps}")
         print(f"  log every        : {log_every_n_eps} eps")
-        print(f"  viz every        : {viz_every_n_eps} eps  → first at ep {self._next_viz_ep}")
-        print(f"  checkpoint every : {checkpoint_every_n_eps} eps → first at ep {self._next_checkpoint_ep}")
+        print(f"  checkpoint every : {checkpoint_every_n_eps} eps")
+        print(f"  hf_upload        : {self.hf_uploader is not None}")
         print(f"  output dir       : {self.output_dir.resolve()}\n")
 
         pbar = tqdm(
-            total      = total_episodes,
-            desc       = "🚁 Training",
-            unit       = "ep",
+            total         = total_episodes,
+            desc          = "🚁 Training",
+            unit          = "ep",
             dynamic_ncols = True,
-            bar_format = "{l_bar}{bar}| {n_fmt}/{total_fmt} ep "
-                         "[{elapsed}<{remaining}] {postfix}",
+            bar_format    = (
+                "{l_bar}{bar}| {n_fmt}/{total_fmt} ep "
+                "[{elapsed}<{remaining}] {postfix}"
+            ),
         )
 
-        last_rollout: Dict = {}
-        last_train:   Dict = {}
+        last_rollout: dict = {}
+        last_train:   dict = {}
+
+        env.reset()
 
         while self.total_episodes_done < total_episodes:
 
-            # ── Collect + Update ──────────────────────────────────────────────
             last_rollout = self._rollout(env, pbar, total_episodes)
             last_train   = self._update()
             self.update_count += 1
 
-            ep = self.total_episodes_done  # Shortcut
+            ep = self.total_episodes_done
 
-            # ✅ FIX-T1: LOG — trigger khi ep >= ngưỡng tiếp theo
             if ep >= self._next_log_ep:
                 elapsed = time.time() - start_time
                 fps     = self.total_steps / max(elapsed, 1e-6)
@@ -285,23 +337,14 @@ class MAPPOTrainer:
                     pbar, last_rollout, last_train,
                     elapsed, fps, curriculum_manager,
                 )
-                # Advance đến ngưỡng kế tiếp (xử lý trường hợp nhảy nhiều)
                 while self._next_log_ep <= ep:
                     self._next_log_ep += log_every_n_eps
 
-            # ✅ FIX-T1: VIZ — trigger khi ep >= ngưỡng tiếp theo
-            if viz_every_n_eps > 0 and ep >= self._next_viz_ep:
-                self._save_viz(env, ep)
-                while self._next_viz_ep <= ep:
-                    self._next_viz_ep += viz_every_n_eps
-
-            # ✅ FIX-T1: CHECKPOINT — trigger khi ep >= ngưỡng tiếp theo
             if ep >= self._next_checkpoint_ep:
                 self.save_checkpoint(ep, curriculum_manager)
                 while self._next_checkpoint_ep <= ep:
                     self._next_checkpoint_ep += checkpoint_every_n_eps
 
-            # ── Curriculum ────────────────────────────────────────────────────
             if curriculum_manager and self.ep_rewards:
                 curriculum_manager.update(
                     coverage     = last_rollout.get("mean_coverage", 0) / 100,
@@ -316,131 +359,144 @@ class MAPPOTrainer:
                     curriculum_manager.apply_to_config(self.config)
                     env.close()
                     env = _EnvWrapper(self.config, self.n_envs, seed)
+                    env.reset()
 
         pbar.close()
         env.close()
 
-        # ── Final checkpoint ──────────────────────────────────────────────────
-        self.save_checkpoint(self.total_episodes_done, curriculum_manager, tag="final")
+        self.save_checkpoint(
+            self.total_episodes_done, curriculum_manager, tag="final"
+        )
         self._print_final(time.time() - start_time, last_rollout)
-
-        # ── Kaggle hint ───────────────────────────────────────────────────────
-        if os.path.exists("/kaggle/working"):
-            print(f"\n📥 KAGGLE DOWNLOAD:")
-            print(f"   {self.checkpoint_dir}/checkpoint_final.pt")
-            print(f"   {self.output_dir}/training_curves.png")
 
     # ══════════════════════════════════════════════════════════════════════════
     # ROLLOUT
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _rollout(
-        self,
-        env:          _EnvWrapper,
-        pbar:         tqdm,
-        max_episodes: int,
-    ) -> Dict:
+    def _rollout(self, env: _EnvWrapper, pbar, max_episodes: int) -> Dict:
+        """
+        Collect rollout data.
+        ✅ FIX-P0-3: Re-compute log_prob SAU khi clip action
+        ✅ FIX-P2:   rews_team.reshape(n_envs) thay vì squeeze()
+        """
+        obs_batch, g_batch = env.get_current_obs()
 
-        obs_batch, g_batch = env.reset()
-        ep_rew   = np.zeros(self.n_envs, dtype=np.float32)
-        ep_len   = np.zeros(self.n_envs, dtype=np.int32)
-        last_g   = g_batch.copy()
-        last_dones = [False] * self.n_envs
+        last_g     = g_batch.copy()
+        last_dones = np.zeros(self.n_envs, dtype=np.float32)
 
         for _ in range(self.rollout_length):
             if self.total_episodes_done >= max_episodes:
                 break
 
-            # ── Inference ─────────────────────────────────────────────────────
-            n        = self.n_envs
+            n = self.n_envs
+
             obs_flat = obs_batch.reshape(n * self.n_agents, self.obs_dim)
             obs_t    = torch.FloatTensor(obs_flat).to(self.device)
             g_t      = torch.FloatTensor(g_batch).to(self.device)
 
             with torch.no_grad():
-                act_t, lp_t = self.actor.get_action(obs_t)
-                val_t       = self.critic.get_value(g_t)
+                act_t, _ = self.actor.get_action(obs_t)
+                val_t    = self.critic.get_value(g_t)
 
-            act_batch = act_t.cpu().numpy().reshape(n, self.n_agents, 3)
+            act_batch = act_t.cpu().numpy().reshape(n, self.n_agents, -1)
+            act_batch = np.clip(act_batch, -1.0, 1.0)
+
+            # ✅ FIX-P0-3: Re-compute log_prob với clipped action
+            act_clipped_t = torch.FloatTensor(
+                act_batch.reshape(n * self.n_agents, -1)
+            ).to(self.device)
+
+            with torch.no_grad():
+                lp_t, _ = self.actor.evaluate_actions(obs_t, act_clipped_t)
+
             lp_batch  = lp_t.cpu().numpy().reshape(n, self.n_agents)
-            val_batch = np.repeat(
-                val_t.cpu().numpy()[:, None], self.n_agents, axis=1
-            )
+            val_np    = val_t.cpu().numpy()
+            val_batch = np.repeat(val_np[:, None], self.n_agents, axis=1)
 
-            # ── Step ──────────────────────────────────────────────────────────
             next_obs, next_g, rews, dones, infos = env.step(act_batch)
 
-            # ── Store + Track ─────────────────────────────────────────────────
+            rews_team   = rews.sum(axis=1, keepdims=True)
+            rews_shared = np.repeat(rews_team, self.n_agents, axis=1)
+            dones_arr   = np.array(dones, dtype=np.float32)
+
+            self.buffer.add(
+                obs        = obs_batch,
+                global_obs = g_batch,
+                actions    = act_batch,
+                rewards    = rews_shared,
+                values     = val_batch,
+                log_probs  = lp_batch,
+                dones      = dones_arr,
+            )
+            self.total_steps += self.n_envs
+
+            # ✅ FIX-P2: reshape thay vì squeeze
+            self._persist_ep_rew += rews_team.reshape(self.n_envs)
+            self._persist_ep_len += 1
+
             for ei in range(n):
-                self.buffer.add(
-                    obs        = obs_batch[ei],
-                    global_obs = g_batch[ei],
-                    actions    = act_batch[ei],
-                    rewards    = rews[ei],
-                    values     = val_batch[ei],
-                    log_probs  = lp_batch[ei],
-                    done       = dones[ei],
-                )
-                self.total_steps += 1
-                ep_rew[ei] += float(rews[ei][0])
-                ep_len[ei] += 1
-
                 if dones[ei]:
-                    info_ei = infos[ei] if infos[ei] else {}
-                    u0      = info_ei.get("uav_0", {})
+                    info_ei    = infos[ei] if infos[ei] else {}
+                    u0         = info_ei.get("uav_0", {})
+                    ep_metrics = u0.get("episode", {})
 
-                    cov  = float(u0.get("coverage_rate",  0.0)) * 100
-                    vf   = int(u0.get("victims_found",    0))
-                    vt   = max(int(u0.get("victims_total", 1)), 1)
+                    if ep_metrics:
+                        cov = float(ep_metrics.get("coverage_rate", 0.0))
+                        vf  = int(ep_metrics.get("victims_found", 0))
+                        vt  = max(int(ep_metrics.get("total_victims", 1)), 1)
+                    else:
+                        cov = float(u0.get("coverage_rate", 0.0)) * 100
+                        vf  = int(u0.get("victims_found", 0))
+                        vt  = max(int(u0.get("victims_total", 1)), 1)
 
-                    done_reason  = u0.get("done_reason", "unknown")
-                    success      = u0.get("success",     False)
+                    done_reason    = (ep_metrics.get("done_reason") or u0.get("done_reason", "unknown"))
+                    success        = ep_metrics.get("success") or u0.get("success", False)
+                    bstats         = u0.get("battery_stats", {})
+                    battery_mean   = bstats.get("mean", 0.0)
+                    total_landings = int(ep_metrics.get("total_landings", 0))
 
-                    bstats       = u0.get("battery_stats", {})
-                    battery_mean = bstats.get("mean", 0.0)
-                    battery_min  = bstats.get("min",  0.0)
+                    actual_ep_len = int(self._persist_ep_len[ei])
+                    actual_ep_rew = float(self._persist_ep_rew[ei])
 
-                    self.ep_rewards.append(float(ep_rew[ei]))
-                    self.ep_lengths.append(int(ep_len[ei]))
+                    # Rolling window
+                    self.ep_rewards.append(actual_ep_rew)
+                    self.ep_lengths.append(actual_ep_len)
                     self.ep_coverage.append(cov)
                     self.ep_victims.append(vf / vt * 100)
+
+                    # ✅ Full history
+                    self._all_rewards.append(actual_ep_rew)
+                    self._all_lengths.append(actual_ep_len)
+                    self._all_coverage.append(cov)
+                    self._all_victims.append(vf / vt * 100)
+
                     self.total_episodes_done += 1
 
-                    # ── tqdm postfix ──────────────────────────────────────────
                     status = "✓" if success else "✗"
                     pbar.update(1)
 
                     reason_label = {
-                        "disabled":  "🔋dead",
-                        "truncated": "⏱timeout",
-                        "coverage":  "✅cov",
-                        "victims":   "✅vic",
-                        None:        "?",
-                    }.get(done_reason, done_reason[:6] if done_reason else "?")
+                        "disabled:battery_death": "🔋AllDead",
+                        "disabled:other":         "🔋Mixed",
+                        "disabled":               "🔋dead",
+                        "truncated":              "⏱Timeout",
+                        "coverage":               "✅Cov",
+                        "victims":                "✅Vic",
+                        None:                     "?Unknown",
+                    }.get(done_reason, done_reason[:8] if done_reason else "?")
 
                     pbar.set_postfix(ordered_dict={
-                        "rew":  f"{float(ep_rew[ei]):+.0f}",
+                        "rew":  f"{actual_ep_rew:+.0f}",
                         "cov":  f"{cov:.0f}%",
                         "vic":  f"{vf}/{vt}",
-                        "step": f"{ep_len[ei]}/{self.config.env.max_steps}",
+                        "step": f"{actual_ep_len}/{self.config.env.max_steps}",
                         "bat":  f"{battery_mean:.0f}%",
+                        "land": f"{total_landings}×",
                         "end":  f"{status}{reason_label}",
                     })
 
-                    # ── Per-10-episode log ────────────────────────────────────
-                    if self.total_episodes_done % 10 == 0:
-                        pbar.write(
-                            f"[EP {self.total_episodes_done:5d}] "
-                            f"{status} {str(done_reason):8s} | "
-                            f"step={ep_len[ei]:4d}/{self.config.env.max_steps} | "
-                            f"bat={battery_mean:5.1f}% (min={battery_min:5.1f}%) | "
-                            f"rew={ep_rew[ei]:+8.1f} | "
-                            f"cov={cov:5.1f}% | "
-                            f"vic={vf:2d}/{vt:2d}"
-                        )
-
-                    ep_rew[ei] = 0.0
-                    ep_len[ei] = 0
+                    self._persist_ep_len[ei] = 0
+                    self._persist_ep_rew[ei] = 0.0
 
                     if self.total_episodes_done >= max_episodes:
                         break
@@ -448,20 +504,15 @@ class MAPPOTrainer:
             obs_batch  = next_obs
             g_batch    = next_g
             last_g     = next_g.copy()
-            last_dones = dones
+            last_dones = dones_arr
 
-        # ── GAE bootstrap ─────────────────────────────────────────────────────
+        # GAE bootstrap
         with torch.no_grad():
             last_vals = self.critic.get_value(
                 torch.FloatTensor(last_g).to(self.device)
             ).cpu().numpy()
 
-        bootstrap = np.full(
-            self.n_agents,
-            float(np.mean(last_vals)),
-            dtype=np.float32,
-        )
-        self.buffer.compute_gae(bootstrap, last_done=all(last_dones))
+        self.buffer.compute_gae(last_values=last_vals, last_dones=last_dones)
 
         return {
             "mean_ep_reward": float(np.mean(self.ep_rewards)) if self.ep_rewards else 0.0,
@@ -486,15 +537,10 @@ class MAPPOTrainer:
                 adv     = torch.FloatTensor(batch["advantages"]).to(self.device)
                 returns = torch.FloatTensor(batch["returns"]).to(self.device)
 
-                # Actor loss
                 lp, entropy = self.actor.evaluate_actions(obs, actions)
                 ratio = torch.exp(lp - old_lp)
                 surr1 = ratio * adv
-                surr2 = torch.clamp(
-                    ratio,
-                    1 - self.clip_epsilon,
-                    1 + self.clip_epsilon,
-                ) * adv
+                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv
                 a_loss = (
                     -torch.min(surr1, surr2).mean()
                     - self.entropy_coeff * entropy.mean()
@@ -505,9 +551,8 @@ class MAPPOTrainer:
                 nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                 self.actor_opt.step()
 
-                # Critic loss
                 values = self.critic.get_value(g_obs)
-                c_loss = nn.functional.mse_loss(values, returns)
+                c_loss = nn.functional.mse_loss(values, returns) / self.n_agents
 
                 self.critic_opt.zero_grad()
                 c_loss.backward()
@@ -519,32 +564,23 @@ class MAPPOTrainer:
                 entropies.append(entropy.mean().item())
                 with torch.no_grad():
                     clip_fracs.append(
-                        ((ratio - 1.0).abs() > self.clip_epsilon)
-                        .float().mean().item()
+                        ((ratio - 1.0).abs() > self.clip_epsilon).float().mean().item()
                     )
 
         self.buffer.clear()
 
         return {
-            "actor_loss":     float(np.mean(actor_losses)),
-            "critic_loss":    float(np.mean(critic_losses)),
-            "entropy":        float(np.mean(entropies)),
-            "clip_fraction":  float(np.mean(clip_fracs)),
+            "actor_loss":    float(np.mean(actor_losses)),
+            "critic_loss":   float(np.mean(critic_losses)),
+            "entropy":       float(np.mean(entropies)),
+            "clip_fraction": float(np.mean(clip_fracs)),
         }
 
     # ══════════════════════════════════════════════════════════════════════════
-    # LOGGING & VIZ
+    # LOGGING (text only)
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _log_detail(
-        self,
-        pbar,
-        rollout:            Dict,
-        train:              Dict,
-        elapsed:            float,
-        fps:                float,
-        curriculum_manager,
-    ):
+    def _log_detail(self, pbar, rollout, train, elapsed, fps, curriculum_manager):
         lines = [
             f"\n{'─'*65}",
             f"📊 Episode {self.total_episodes_done:,} | Update {self.update_count:,}",
@@ -564,7 +600,6 @@ class MAPPOTrainer:
             f"    elapsed  : {elapsed/60:8.1f} min",
             f"  Next triggers:",
             f"    log      : ep {self._next_log_ep:,}",
-            f"    viz      : ep {self._next_viz_ep:,}",
             f"    ckpt     : ep {self._next_checkpoint_ep:,}",
         ]
 
@@ -580,119 +615,11 @@ class MAPPOTrainer:
         for line in lines:
             pbar.write(line)
 
-    def _save_viz(self, env: _EnvWrapper, episode: int):
-        """Lưu 2D viz snapshot (chỉ single env)."""
-        if env.n_envs > 1:
-            return
-
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            frame = env.render()
-            if frame is None:
-                return
-
-            fig, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(frame)
-            ax.axis("off")
-            ax.set_title(f"Episode {episode:,}", fontsize=14)
-
-            path = self.viz_dir / f"ep_{episode:06d}.png"
-            fig.savefig(path, bbox_inches="tight", dpi=100)
-            plt.close(fig)
-
-        except Exception:
-            pass
-
-    def plot_training_curves(self, save_path: str = None):
-        """Vẽ 4-panel training curves."""
-        try:
-            import matplotlib
-            if save_path:
-                matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            if not self.ep_rewards:
-                print("⚠️  No training data to plot")
-                return
-
-            episodes = list(range(1, len(self.ep_rewards) + 1))
-            rewards  = list(self.ep_rewards)
-            coverage = list(self.ep_coverage)
-            victims  = list(self.ep_victims)
-            lengths  = list(self.ep_lengths)
-
-            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-            fig.suptitle(
-                f"MAPPO Training Curves — {self.run_name}",
-                fontsize=16, fontweight="bold",
-            )
-
-            window = max(5, min(20, len(rewards) // 5))
-
-            def _plot(ax, data, color, smooth_color, ylabel, title,
-                      target=None, target_label=None, ylim=None):
-                ax.plot(episodes, data, alpha=0.3, color=color, linewidth=0.5)
-                if len(data) >= window:
-                    smoothed = np.convolve(
-                        data, np.ones(window) / window, mode="valid"
-                    )
-                    sx = list(range(window, len(data) + 1))
-                    ax.plot(sx, smoothed, color=smooth_color,
-                            linewidth=2, label=f"MA({window})")
-                if target is not None:
-                    ax.axhline(target, color="orange", linestyle="--",
-                               linewidth=0.8, alpha=0.6, label=target_label)
-                ax.set_xlabel("Episode", fontsize=11)
-                ax.set_ylabel(ylabel,    fontsize=11)
-                ax.set_title(title,      fontsize=12, fontweight="bold")
-                if ylim:
-                    ax.set_ylim(*ylim)
-                ax.grid(alpha=0.3)
-                ax.legend()
-
-            _plot(axes[0,0], rewards,  "steelblue", "darkblue",
-                  "Reward",        "Episode Reward",     target=0)
-            _plot(axes[0,1], coverage, "green",     "darkgreen",
-                  "Coverage (%)",  "Coverage Rate",
-                  target=70, target_label="Target 70%",  ylim=(0,100))
-            _plot(axes[1,0], victims,  "purple",    "indigo",
-                  "Victims (%)",   "Victims Found Rate",
-                  target=80, target_label="Target 80%",  ylim=(0,100))
-            _plot(axes[1,1], lengths,  "coral",     "red",
-                  "Steps",         "Episode Length",
-                  target=self.config.env.max_steps,
-                  target_label=f"Max ({self.config.env.max_steps})")
-
-            plt.tight_layout()
-
-            if save_path:
-                plt.savefig(save_path, dpi=150, bbox_inches="tight")
-                plt.close(fig)
-                print(f"📊 Training curves saved: {save_path}")
-            else:
-                plt.show()
-
-        except Exception as e:
-            print(f"⚠️  Failed to plot: {e}")
-
     # ══════════════════════════════════════════════════════════════════════════
     # CHECKPOINT
     # ══════════════════════════════════════════════════════════════════════════
 
-    def save_checkpoint(
-        self,
-        episode:            int,
-        curriculum_manager              = None,
-        tag:                str = None,
-    ):
-        """
-        Lưu checkpoint.
-
-        ✅ FIX-T2: Print absolute path để dễ tìm file
-        """
+    def save_checkpoint(self, episode, curriculum_manager=None, tag=None):
         name = (
             f"checkpoint_{tag}.pt"
             if tag
@@ -702,16 +629,18 @@ class MAPPOTrainer:
 
         torch.save(
             {
-                "episode":                      episode,
-                "update":                       self.update_count,
-                "total_episodes_done":          self.total_episodes_done,
-                "actor_state_dict":             self.actor.state_dict(),
-                "critic_state_dict":            self.critic.state_dict(),
-                "actor_optimizer_state_dict":   self.actor_opt.state_dict(),
-                "critic_optimizer_state_dict":  self.critic_opt.state_dict(),
-                "ep_rewards":                   list(self.ep_rewards),
-                "ep_coverage":                  list(self.ep_coverage),
-                "ep_victims":                   list(self.ep_victims),
+                "episode":                     episode,
+                "update":                      self.update_count,
+                "total_episodes_done":         self.total_episodes_done,
+                "actor_state_dict":            self.actor.state_dict(),
+                "critic_state_dict":           self.critic.state_dict(),
+                "actor_optimizer_state_dict":  self.actor_opt.state_dict(),
+                "critic_optimizer_state_dict": self.critic_opt.state_dict(),
+                # ✅ Full history
+                "ep_rewards":                  self._all_rewards,
+                "ep_coverage":                 self._all_coverage,
+                "ep_victims":                  self._all_victims,
+                "ep_lengths":                  self._all_lengths,
                 "curriculum_stage": (
                     curriculum_manager.stage_idx
                     if curriculum_manager else 0
@@ -720,28 +649,78 @@ class MAPPOTrainer:
             path,
         )
 
-        # ✅ FIX-T2: Print absolute path
-        print(f"\n💾 Checkpoint saved:")
-        print(f"   {path.resolve()}")
-        print(f"   episode={episode:,} | update={self.update_count:,} | "
-              f"reward={np.mean(self.ep_rewards):+.1f} | "
-              f"cov={np.mean(self.ep_coverage):.1f}%\n"
-              if self.ep_rewards else "\n")
+        print(f"\n💾 Checkpoint saved: {path.resolve()}")
+
+        # ── Upload HF ─────────────────────────────────────────────────────────
+        if self.hf_uploader:
+            metrics = {
+                "algo":           "mappo",
+                "run_name":       self.run_name,
+                "total_episodes": self.total_episodes_done,
+                "total_steps":    self.total_steps,
+                "mean_reward":    float(np.mean(self.ep_rewards))  if self.ep_rewards  else 0.0,
+                "mean_coverage":  float(np.mean(self.ep_coverage)) if self.ep_coverage else 0.0,
+                "mean_victims":   float(np.mean(self.ep_victims))  if self.ep_victims  else 0.0,
+                # ✅ Full history cho plot_compare.py
+                "ep_rewards":     self._all_rewards,
+                "ep_coverage":    self._all_coverage,
+                "ep_victims":     self._all_victims,
+                "ep_lengths":     self._all_lengths,
+            }
+
+            if tag == "final":
+                # ✅ Không plot, chỉ upload checkpoint + metrics
+                self.hf_uploader.upload_final(
+                    run_name        = self._hf_run_name,
+                    checkpoint_path = path,
+                    metrics         = metrics,
+                    plot_path       = None,
+                )
+                self._cleanup_local()
+
+            elif episode % self.hf_upload_every == 0:
+                self.hf_uploader.upload_checkpoint(
+                    checkpoint_path = path,
+                    run_name        = self._hf_run_name,
+                    episode         = episode,
+                    metrics         = metrics,
+                )
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+
+        if self.ep_rewards:
+            print(
+                f"   episode={episode:,} | reward={np.mean(self.ep_rewards):+.1f} | "
+                f"cov={np.mean(self.ep_coverage):.1f}%\n"
+            )
+
+    def _cleanup_local(self):
+        if not self.hf_uploader:
+            return
+        import shutil
+        try:
+            shutil.rmtree(str(self.output_dir))
+            print(f"🗑️  Local files cleaned: {self.output_dir}")
+        except Exception as e:
+            print(f"⚠️  Cleanup failed: {e}")
 
     def load_checkpoint(self, path: str) -> int:
-        """Load checkpoint và restore state."""
-        ckpt = torch.load(path, map_location=self.device)
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.actor.load_state_dict(ckpt["actor_state_dict"])
         self.critic.load_state_dict(ckpt["critic_state_dict"])
         self.actor_opt.load_state_dict(ckpt["actor_optimizer_state_dict"])
         self.critic_opt.load_state_dict(ckpt["critic_optimizer_state_dict"])
         self.total_episodes_done = ckpt.get("total_episodes_done", 0)
         self.update_count        = ckpt.get("update", 0)
-
+        # Restore history
+        self._all_rewards  = ckpt.get("ep_rewards",  [])
+        self._all_coverage = ckpt.get("ep_coverage", [])
+        self._all_victims  = ckpt.get("ep_victims",  [])
+        self._all_lengths  = ckpt.get("ep_lengths",  [])
         print(f"✅ Checkpoint loaded: {path}")
-        print(f"   episode={self.total_episodes_done:,} | "
-              f"update={self.update_count:,}")
-
+        print(f"   episode={self.total_episodes_done:,} | update={self.update_count:,}")
         return ckpt.get("episode", 0)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -750,7 +729,7 @@ class MAPPOTrainer:
 
     def _print_init(self):
         print(f"\n{'='*65}")
-        print(f"🚁 MAPPO Trainer")
+        print(f"🚁 MAPPO Trainer — Kaggle Mode")
         print(f"{'='*65}")
         print(f"  device     : {self.device}")
         print(f"  run_name   : {self.run_name}")
@@ -760,7 +739,11 @@ class MAPPOTrainer:
         print(f"  global_dim : {self.global_obs_dim}")
         print(f"  actor      : {sum(p.numel() for p in self.actor.parameters()):,} params")
         print(f"  critic     : {sum(p.numel() for p in self.critic.parameters()):,} params")
-        print(f"  buffer     : {self.rollout_length * self.n_envs:,} steps")
+        print(
+            f"  buffer     : {self.rollout_length}T × {self.n_envs}E × {self.n_agents}A "
+            f"= {self.rollout_length * self.n_envs * self.n_agents:,} transitions"
+        )
+        print(f"  hf_upload  : {self.hf_uploader is not None}")
         print(f"  output     : {self.output_dir.resolve()}")
         print(f"{'='*65}\n")
 
@@ -780,11 +763,15 @@ class MAPPOTrainer:
             print(f"  victims  : {metrics.get('mean_victims',    0):.2f}%")
             print(f"  ep_len   : {metrics.get('mean_ep_length',  0):.1f} steps")
 
-        print(f"\n💾 Saved:")
-        final_path = self.checkpoint_dir / "checkpoint_final.pt"
-        print(f"  checkpoint : {final_path.resolve()}")
+        if self.hf_uploader:
+            print(f"\n🤗 HuggingFace:")
+            print(f"  https://huggingface.co/datasets/duy95/sar-uav-results")
+            print(f"  tree/main/{self._hf_run_name}")
+            print(f"\n📥 Download checkpoint:")
+            print(f"  python plot_compare.py --skip-train --run-name {self._hf_run_name}")
+        else:
+            final_path = self.checkpoint_dir / "checkpoint_final.pt"
+            print(f"\n💾 Saved locally:")
+            print(f"  checkpoint : {final_path.resolve()}")
 
-        plot_path = self.output_dir / "training_curves.png"
-        self.plot_training_curves(save_path=str(plot_path))
-        print(f"  plot       : {plot_path.resolve()}")
         print(f"{'='*65}\n")

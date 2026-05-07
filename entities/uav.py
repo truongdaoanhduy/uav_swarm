@@ -74,7 +74,7 @@ class UAV:
         self.distance_3d:   float = 0.0
         self.victims_found: int   = 0
         self.battery_death: bool  = False
-
+        self._prev_state: UAVState = state
     # ─── Battery Properties ───────────────────────────────────────────────────
 
     @property
@@ -312,6 +312,8 @@ class UAV:
                 self.battery < self.cfg.uav.battery_ready):
             return
 
+        # ✅ NEW: Track previous state trước khi chuyển
+        self._prev_state = self.state
         self.state = new_state
 
     # ─── Convenience predicates ───────────────────────────────────────────────

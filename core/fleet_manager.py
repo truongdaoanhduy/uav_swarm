@@ -31,6 +31,7 @@ class FleetManager:
         # ✅ FIX: Tracking cho episode summary (thay vì spam mỗi step)
         self._episode_forced_returns: int = 0
         self._episode_disables: int = 0
+        self._cached_n_active: int = 0
 
     def reset(self, all_uavs, stations) -> None:
         self.all_uavs = all_uavs
@@ -89,31 +90,54 @@ class FleetManager:
 
         return max(deployable, key=score)
 
+    # core/fleet_manager.py
+
     def enforce_safety_constraints(self) -> Dict[str, int]:
         """
-        ✅ FIX: SILENT enforcement - không spam console
-        Chỉ đếm để summary cuối episode
+        Enforce safety constraints.
+        
+        ✅ FIX PERF: Tính n_active 1 lần trước loop (O(n) thay vì O(n²))
+        ✅ Update counter incremental thay vì recount mỗi iteration
         """
-        n_disabled = 0
+        n_disabled      = 0
         n_forced_return = 0
+        n_auto_deploy   = 0
+
+        # ✅ PERF FIX: Tính 1 lần
+        n_active = sum(
+            1 for u in self.all_uavs
+            if u.state == UAVState.ACTIVE
+        )
+        
+        self._cached_n_active = n_active
 
         for uav in self.all_uavs:
-            # [1] Battery dead → disable
+
+            # ── [1] Battery dead → DISABLED ──────────────────────────────────
             if uav.battery <= self.cfg.uav.battery_dead_threshold:
                 if uav.state != UAVState.DISABLED:
-                    uav.mark_disabled()
-                    n_disabled += 1
+                    was_active = (uav.state == UAVState.ACTIVE)
+
+                    uav.state        = UAVState.DISABLED
+                    uav.vel[:]       = 0.0
+                    uav.battery_death = True
+
+                    n_disabled              += 1
                     self._enforced_disables += 1
-                    self._episode_disables += 1
-                    # ✅ SILENT - không print
-                    logger.debug(f"UAV {uav.id} disabled (battery=0)")
+                    self._episode_disables  += 1
+
+                    # ✅ Incremental update
+                    if was_active:
+                        n_active -= 1
+
+                    logger.debug("UAV %d disabled (battery=0)", uav.id)
                 continue
 
-            # [2] Emergency return
+            # ── [2] Emergency return ──────────────────────────────────────────
             if uav.state == UAVState.ACTIVE:
                 emergency_threshold = self.cfg.uav.battery_penalty_emergency
                 resume_threshold    = self.cfg.uav.battery_return_threshold
-                is_locked = self._uav_return_locks.get(uav.id, False)
+                is_locked           = self._uav_return_locks.get(uav.id, False)
 
                 if not is_locked and uav.battery < emergency_threshold:
                     target = uav.find_nearest_station(self.stations)
@@ -121,28 +145,54 @@ class FleetManager:
                         uav.target_station = target
                         uav.set_state(UAVState.RETURNING)
                         self._uav_return_locks[uav.id] = True
-                        n_forced_return += 1
-                        self._enforced_returns += 1
-                        self._episode_forced_returns += 1
-                        # ✅ SILENT - không print
+
+                        n_forced_return              += 1
+                        self._enforced_returns        += 1
+                        self._episode_forced_returns  += 1
+
+                        # ✅ Incremental update
+                        n_active -= 1
+
                         logger.debug(
-                            f"UAV {uav.id} emergency return "
-                            f"(battery={uav.battery:.1f}%)"
+                            "UAV %d forced return (battery=%.1f%%)",
+                            uav.id, uav.battery,
                         )
 
                 if is_locked and uav.battery > resume_threshold:
                     self._uav_return_locks[uav.id] = False
 
+            # ── [3] Auto-deploy khi CHARGING đủ pin ──────────────────────────
+            if uav.state == UAVState.CHARGING:
+                if uav.battery >= self.cfg.uav.battery_ready_threshold:
+                    # ✅ PERF FIX: Dùng n_active đã tính, không recount
+                    if n_active < (self.n_total - 1):
+                        if uav.target_station is not None:
+                            uav.target_station.release(uav)
+
+                        uav.set_state(UAVState.ACTIVE)
+                        uav.target_station = None
+                        n_auto_deploy += 1
+
+                        # ✅ Incremental update
+                        n_active += 1
+
+                        logger.debug(
+                            "UAV %d auto-deployed (battery=%.1f%%, n_active=%d)",
+                            uav.id, uav.battery, n_active,
+                        )
+
         return {
             "enforced_disables": n_disabled,
             "enforced_returns":  n_forced_return,
+            "auto_deploys":      n_auto_deploy,
             "total_enforced":    n_disabled + n_forced_return,
         }
 
     def suggest_deployments(self, target_active=None):
         if target_active is None:
             target_active = max(2, int(self.n_total * 0.3))
-        n_active = sum(1 for u in self.all_uavs if u.state == UAVState.ACTIVE)
+        n_active = self._cached_n_active 
+        
         need_deploy = max(0, target_active - n_active)
         if need_deploy == 0:
             return []

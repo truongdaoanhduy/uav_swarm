@@ -33,7 +33,7 @@ class EnvConfig:
     # ══════════════════════════════════════════════════════════
     # OBJECT PLACEMENT CONSTRAINTS
     # ══════════════════════════════════════════════════════════
-    max_place_attempts: int = 500  # ✅ INCREASED: 200 → 500 (FIX-P1E)
+    max_place_attempts: int = 1000  # ✅ INCREASED: 200 → 500 (FIX-P1E)
     
     # ✅ FIX 3.1+3.2: UNIFIED placement params (single source of truth)
     min_object_spacing_m: float = 2.5  # ✅ CHANGED: 2.0 → 2.5 (sync với MapGenerator)

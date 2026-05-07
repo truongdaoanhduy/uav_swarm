@@ -6,7 +6,7 @@ Allows switching between different physics engines (logic/pybullet/isaac).
 """
 
 from __future__ import annotations
-
+from typing import Optional
 from abc import ABC, abstractmethod
 from typing import Any
 

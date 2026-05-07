@@ -50,7 +50,7 @@ class UAVConfig:
     # ══════════════════════════════════════════════════════════
     battery_warning_pct: float = 20.0   # warning level ≤ 20%
     battery_critical_pct: float = 10.0  # critical level ≤ 10%
-    battery_emergency_pct: float = 5.0  # emergency level ≤ 5%
+    battery_emergency_pct: float = 40.0  # emergency level ≤ 25%
 
     # ══════════════════════════════════════════════════════════
     # FLEET MANAGEMENT POLICY

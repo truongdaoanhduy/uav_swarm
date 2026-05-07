@@ -18,13 +18,14 @@ plotly
 torch
 tensorboard
 shapely
-
+gymnasium
 wandb
 tqdm
-
+huggingface
 # Utilities
 tqdm
 pyyaml
+huggingface_hub
 
 # Image / Video processing
 opencv-python
