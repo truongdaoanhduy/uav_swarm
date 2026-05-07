@@ -171,11 +171,11 @@ STAGE_HARD = StageConfig(
     n_victims_max=40,
 
     # ══ OBSTACLES: density = (15+7)/62500*1000 = 0.35/1000m² ══
-    n_debris=30,
-    n_danger_total=9,
+    n_debris=25,
+    n_danger_total=8,
 
     # ══ STATION: persistent bottleneck ════════════════════════
-    station_capacity=2,
+    station_capacity=1,
 
     # ══ TIME: 400/62500 = 0.0064 steps/m² (hardest) ══════════
     max_steps=2500,
