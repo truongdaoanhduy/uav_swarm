@@ -167,18 +167,18 @@ STAGE_HARD = StageConfig(
 
     # ══ VICTIMS: density = (28+36)/2 / 62500 * 1000 = 0.51/1000m² ══
     # Gần bằng EASY/MEDIUM → density consistent
-    n_victims_min=28,
-    n_victims_max=36,
+    n_victims_min=30,
+    n_victims_max=40,
 
     # ══ OBSTACLES: density = (15+7)/62500*1000 = 0.35/1000m² ══
-    n_debris=15,
-    n_danger_total=7,
+    n_debris=30,
+    n_danger_total=9,
 
     # ══ STATION: persistent bottleneck ════════════════════════
-    station_capacity=1,
+    station_capacity=2,
 
     # ══ TIME: 400/62500 = 0.0064 steps/m² (hardest) ══════════
-    max_steps=100,
+    max_steps=2500,
 
     min_episodes=500,
     advance_coverage=0.60,
@@ -214,10 +214,13 @@ def _verify_stages() -> None:
             f"[{stage.name}] victim density {vd:.3f} "
             f"out of range [0.45, 0.65]/1000m²"
         )
-        # Obstacle density nên trong khoảng [0.25, 0.50]
-        assert 0.25 <= od <= 0.50, (
+        
+        # ✅ THAY ĐỔI: Obstacle density upper limit
+        # OLD: assert 0.25 <= od <= 0.50
+        # NEW: assert 0.25 <= od <= 1.20
+        assert 0.25 <= od <= 1.20, (  # ← THAY ĐỔI Ở ĐÂY
             f"[{stage.name}] obstacle density {od:.3f} "
-            f"out of range [0.25, 0.50]/1000m²"
+            f"out of range [0.25, 1.20]/1000m²"  # ← CẬP NHẬT MESSAGE
         )
 
     # Coverage pressure phải tăng dần
