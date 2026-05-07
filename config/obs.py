@@ -72,7 +72,7 @@ class ObsConfig:
     # ENTITY OBSERVATION LIMITS
     # ══════════════════════════════════════════════════════════
     n_obs_victims: int = 5         # max victims in observation
-    n_obs_obstacles: int = 4       # max obstacles in observation
+    n_obs_obstacles: int = 8       # max obstacles in observation
     n_tracked_teammates: int = 3   # max teammates to track
     
     # ══════════════════════════════════════════════════════════

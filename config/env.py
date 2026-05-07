@@ -26,7 +26,7 @@ class EnvConfig:
     # ══════════════════════════════════════════════════════════
     n_stations: int = 2
     charge_radius_m: float = 3.0
-    station_capacity: int = 2
+    station_capacity: int = 1
     min_station_spacing_m: float = 15.0
     station_min_boundary_dist_m: float = 5.0
     

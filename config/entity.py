@@ -124,7 +124,7 @@ class DangerZoneConfig:
     penalties: Dict[str, float] = field(default_factory=lambda: {
         "gas":       -3.0,   # Was -15.0
         "fire":      -3.0,   # Was -15.0
-        "smoke":     -1.5,   # Was -8.0
+        "smoke":     -2.5,   # Was -8.0
         "collapse":  -1.0,   # Was -5.0
         "radiation": -5.0,   # Was -25.0 ← THỦ PHẠM CHÍNH
     })
