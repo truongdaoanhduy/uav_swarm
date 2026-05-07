@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-_DONE_COVERAGE_THRESHOLD = 0.90
+_DONE_COVERAGE_THRESHOLD = 0.95
 
 _INFO_STEP          = "step"
 _INFO_COVERAGE      = "coverage_rate"
