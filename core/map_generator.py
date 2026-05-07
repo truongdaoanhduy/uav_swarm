@@ -232,8 +232,8 @@ class MapGenerator:
                     logger.debug("Debris %d placed with relaxed spacing (attempt %d)", i, attempt)
                 break
 
-            if not placed:
-                logger.warning("Debris %d: skipped (no valid position after %d attempts)", i, max_attempts)
+            # if not placed:
+            #     logger.warning("Debris %d: skipped (no valid position after %d attempts)", i, max_attempts)
 
         return debris_list
 
