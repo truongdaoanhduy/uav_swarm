@@ -178,7 +178,7 @@ STAGE_HARD = StageConfig(
     station_capacity=1,
 
     # ══ TIME: 400/62500 = 0.0064 steps/m² (hardest) ══════════
-    max_steps=400,
+    max_steps=100,
 
     min_episodes=500,
     advance_coverage=0.60,

@@ -11,7 +11,8 @@ FIXES APPLIED:
     ✅ BUG-ENV-03: Terminal reward không double-count
     ✅ BUG-ENV-04: max_steps REMOVED từ build_all()
     ✅ BUG-ENV-05: Episode metrics keys
-    ✅ BUG-ENV-06: done/truncated MOVED trước reward computation ✅✅✅
+    ✅ BUG-ENV-06: done/truncated MOVED trước reward computation
+    ✅ BUG-ENV-07: Auto-reset step_count sau episode done (NEW!)
 """
 
 from __future__ import annotations
@@ -87,7 +88,7 @@ class SARBaseEnv(gym.Env):
         )
         self.action_space = spaces.Box(
             low=-1.0, high=1.0,
-            shape=(3,), dtype=np.float32,
+            shape=(4,), dtype=np.float32,
         )
 
         self._map_gen   = MapGenerator(self.cfg)
@@ -113,6 +114,7 @@ class SARBaseEnv(gym.Env):
         self._episode_reward_sum:  float = 0.0
         self._step_rewards_history: list  = []
         self._renderer = None
+        self._prev_uav_states: dict[int, UAVState] = {}
 
     # ── Reset ────────────────────────────────────────────────────────────────
 
@@ -136,7 +138,6 @@ class SARBaseEnv(gym.Env):
         self._episode_reward_sum  = 0.0
         self._step_rewards_history = []
 
-        # ✅ BUG-ENV-02: Reset reward state
         self._reward_fn.reset()
 
         map_data = self._map_gen.generate(
@@ -160,14 +161,17 @@ class SARBaseEnv(gym.Env):
         )
         self._ep_logger.set_total_victims(len(state["victims"]))
 
-        obs_dict,critic_obs = self._build_obs_dict(
+        self._prev_uav_states = {
+            uav.id: uav.state
+            for uav in state["uavs"]
+        }
+
+        obs_dict, critic_obs = self._build_obs_dict(
             state["uavs"],
             state["stations"],
             state["victims"],
             state["obstacles"],
         )
-
-        
 
         if self._renderer is not None and hasattr(self._renderer, "reset_scene"):
             self._renderer.reset_scene()
@@ -183,9 +187,9 @@ class SARBaseEnv(gym.Env):
             _INFO_COVERAGE:      0.0,
             _INFO_VICTIMS_FOUND: 0,
             _INFO_VICTIMS_TOTAL: len(state["victims"]),
+            "global_obs":        critic_obs,
         }
-        info['global_obs'] = critic_obs
-        
+
         if self.verbose >= 2:
             print(
                 f"[ENV] Episode {self._episode_id} | seed={seed} "
@@ -222,23 +226,53 @@ class SARBaseEnv(gym.Env):
         coverage_map  = state["coverage_map"]
         fleet_manager = state["fleet_manager"]
 
-        # ✅ 3. Coverage
+        # ✅ 3. Landing tracking
+        if self._ep_logger is not None:
+            for uav in uavs:
+                curr_state = uav.state
+                prev_state = self._prev_uav_states.get(uav.id, curr_state)
+
+                if (prev_state != UAVState.CHARGING
+                        and curr_state == UAVState.CHARGING):
+                    battery_before = getattr(
+                        uav, '_battery_before_charge', uav.battery_pct
+                    )
+                    self._ep_logger.log_landing(
+                        uav_id         = uav.id,
+                        step           = self._step_count,
+                        battery_before = battery_before,
+                        battery_after  = uav.battery_pct,
+                    )
+
+                if curr_state == UAVState.CHARGING:
+                    self._ep_logger.log_charging_step(uav.id)
+
+                if curr_state == UAVState.RETURNING:
+                    uav._battery_before_charge = uav.battery_pct
+
+            for uav in uavs:
+                self._prev_uav_states[uav.id] = uav.state
+
+        # ✅ 4. Coverage
         cur_coverage = coverage_map.get_coverage_rate()
 
-        # ✅ 4. Newly found
+        # ✅ 5. Newly found
         newly_found = [
             v for v in victims
             if v.is_found and v.found_at_step == self._step_count
         ]
 
-        # ✅✅✅ BUG-ENV-06 FIX: MOVE done/truncated computation HERE
-        # Phải tính TRƯỚC KHI dùng trong reward
+        if self._ep_logger is not None:
+            for _ in newly_found:
+                self._ep_logger.log_event("victim_found")
+
+        # ✅ 6. Done check (TRƯỚC reward - BUG-ENV-06)
         done_reason = self._check_done(cur_coverage, victims, uavs)
         done        = done_reason is not None
         truncated   = self._step_count >= self.cfg.env.max_steps
         is_terminal = done or truncated
 
-        # ✅ 5. Per-agent rewards (dùng is_terminal đã được định nghĩa)
+        # ✅ 7. Per-agent rewards
         rewards_dict: dict[int, float] = {}
         for uav in uavs:
             if uav.state == UAVState.DISABLED:
@@ -259,12 +293,12 @@ class SARBaseEnv(gym.Env):
                 fleet_manager      = fleet_manager,
                 prev_coverage      = self._prev_coverage,
                 current_step       = self._step_count,
-                done               = is_terminal,   # ✅ SAFE: đã định nghĩa
+                done               = is_terminal,
                 stations           = stations,
             )
             rewards_dict[uav.id] = breakdown["total"]
 
-        # ✅ 6. Global reward
+        # ✅ 8. Global reward
         global_reward = self._reward_fn.compute(
             uavs          = uavs,
             victims       = victims,
@@ -274,42 +308,49 @@ class SARBaseEnv(gym.Env):
             newly_found   = newly_found,
             prev_coverage = self._prev_coverage,
             current_step  = self._step_count,
-            done          = is_terminal,   # ✅ SAFE: đã định nghĩa
+            done          = is_terminal,
             stations      = stations,
         )
 
-        # ✅ 7. Accumulate episode reward
+        # ✅ 9. Accumulate episode reward
         self._episode_reward_sum += global_reward["total"]
         self._step_rewards_history.append({
-            "step":   self._step_count,
-            "total":  global_reward["total"],
-            "global": global_reward["total"],
+            "step":  self._step_count,
+            "total": global_reward["total"],
         })
 
-        # ✅ 8. Extreme step detection
         if global_reward["total"] < -100:
+            logger.warning(
+                "[EP %d | STEP %d] Extreme step reward: %.1f | %s",
                 self._episode_id,
                 self._step_count,
                 global_reward["total"],
                 self._reward_fn.summarize(global_reward),
-            
+            )
 
-        # ✅ 9. Logging
-        self._log_step(rewards_dict, cur_coverage, newly_found, uavs, obstacles)
+        # ✅ 10. Logging
+        self._log_step(rewards_dict, cur_coverage, newly_found, uavs, obstacles, 
+                       global_breakdown = global_reward)
         self._prev_coverage = cur_coverage
 
-        # ✅ 10. Observations
-        obs_dict,critic_obs = self._build_obs_dict(uavs, stations, victims, obstacles)
-        
-        
-        # ✅ 11. Info
-        n_found  = sum(1 for v in victims if v.is_found)
-        n_total  = len(victims)
-        n_active = sum(1 for u in uavs if u.state == UAVState.ACTIVE)
-        n_charge = sum(1 for u in uavs if u.state == UAVState.CHARGING)
-        n_dead   = sum(1 for u in uavs if u.state == UAVState.DISABLED)
-        success  = done_reason in ("coverage", "victims")
+        # ✅ 11. Observations
+        obs_dict, critic_obs = self._build_obs_dict(uavs, stations, victims, obstacles)
+
+        # ✅ 12. Info dict
+        n_found     = sum(1 for v in victims if v.is_found)
+        n_total     = len(victims)
+        n_active    = sum(1 for u in uavs if u.state == UAVState.ACTIVE)
+        n_returning = sum(1 for u in uavs if u.state == UAVState.RETURNING)
+        n_charge    = sum(1 for u in uavs if u.state == UAVState.CHARGING)
+        n_deploying = sum(1 for u in uavs if u.state == UAVState.DEPLOYING)
+        n_dead      = sum(1 for u in uavs if u.state == UAVState.DISABLED)
+
+        n_total_uavs = len(uavs)
+        n_accounted  = n_active + n_returning + n_charge + n_deploying + n_dead
+
+        success     = done_reason in ("coverage", "victims")
         fleet_stats = fleet_manager.get_battery_stats()
+
         info = {
             "coverage":          cur_coverage,
             "victims_found":     n_found,
@@ -321,14 +362,20 @@ class SARBaseEnv(gym.Env):
             _INFO_N_ACTIVE:      n_active,
             _INFO_N_CHARGING:    n_charge,
             _INFO_N_DISABLED:    n_dead,
+            "n_returning":       n_returning,
+            "n_deploying":       n_deploying,
+            "n_total_uavs":      n_total_uavs,
+            "n_accounted":       n_accounted,
             _INFO_SUCCESS:       success,
             _INFO_DONE_REASON:   done_reason or ("truncated" if truncated else None),
             _INFO_REWARDS:       global_reward,
             "newly_found_ids":   [v.id for v in newly_found],
             "battery_stats":     fleet_stats,
+            "global_obs":        critic_obs,
         }
-        info['global_obs'] = critic_obs 
-        # ✅ 12. Episode-end
+
+        # ✅ 13. Episode end + AUTO-RESET for continuous training
+         # ✅ 13. Episode end — CHỈ log và cleanup, KHÔNG auto-reset
         if is_terminal:
             if self._ep_logger is not None:
                 ep_metrics = self._ep_logger.finalize()
@@ -349,6 +396,10 @@ class SARBaseEnv(gym.Env):
                     done_reason    = done_reason,
                     truncated      = truncated,
                 )
+            # ✅ KHÔNG reset ở đây
+            # Reset được quản lý bởi:
+            #   - _EnvWrapper.step() với n_envs=1
+            #   - vec_env worker với n_envs>1
 
         return obs_dict, rewards_dict, done, truncated, info
 
@@ -422,9 +473,6 @@ class SARBaseEnv(gym.Env):
         victims:   list,
         obstacles: list,
     ) -> tuple[dict[int, np.ndarray], np.ndarray]:
-        """
-        ✅ BUG-ENV-04 FIX: KHÔNG truyền max_steps vào build_all()
-        """
         obs_dict: dict[int, np.ndarray] = {}
 
         result = self._obs_builder.build_all(
@@ -433,7 +481,6 @@ class SARBaseEnv(gym.Env):
             victims      = victims,
             obstacles    = obstacles,
             current_step = self._step_count,
-            # ✅ max_steps KHÔNG có trong signature của build_all()
         )
 
         for uid, obs in result.actor_obs.items():
@@ -442,38 +489,55 @@ class SARBaseEnv(gym.Env):
                 continue
             obs_dict[uid] = obs.astype(np.float32)
 
-        return obs_dict,result.critic_obs.copy()
+        return obs_dict, result.critic_obs.copy()
 
-    def _check_done(
-        self,
-        coverage: float,
-        victims:  list,
-        uavs:     list,
-    ) -> str | None:
-        if coverage >= _DONE_COVERAGE_THRESHOLD:
+    def _check_done(self, coverage, victims, uavs) -> str | None:
+        if coverage >= 0.9:
             return "coverage"
+
         if victims and all(v.is_found for v in victims):
             return "victims"
-        if uavs and all(u.state == UAVState.DISABLED for u in uavs):
-            return "disabled"
+
+        all_disabled = all(u.state == UAVState.DISABLED for u in uavs)
+        if all_disabled:
+            dead_batteries = sum(1 for u in uavs if u.battery_death)
+            if dead_batteries == len(uavs):
+                return "disabled:battery_death"
+            else:
+                return "disabled:other"
+
         return None
 
     def _log_step(
         self,
-        rewards:     dict,
-        coverage:    float,
-        newly_found: list,
-        uavs:        list,
-        obstacles:   list,
+        rewards:          dict,
+        coverage:         float,
+        newly_found:      list,
+        uavs:             list,
+        obstacles:        list,
+        global_breakdown: Optional[dict] = None,   # ✅ NEW
     ) -> None:
         if self._ep_logger is None:
             return
 
-        self._ep_logger.log_step(rewards=rewards, coverage=coverage)
+        # ✅ Pass breakdown vào log_step
+        self._ep_logger.log_step(
+            rewards   = rewards,
+            coverage  = coverage,
+            breakdown = global_breakdown,   # ← KEY FIX
+        )
 
+        # Collision logging (giữ nguyên)
         for uav in uavs:
             for obs in obstacles:
                 if hasattr(obs, "causes_collision") and obs.causes_collision(uav.pos):
+                    obs_info = {
+                        "id":     obs.id if hasattr(obs, "id") else None,
+                        "type":   type(obs).__name__,
+                        "pos":    obs.pos.tolist() if hasattr(obs, "pos") else None,
+                        "height": getattr(obs, "height_3d", None),
+                    }
+                    self._ep_logger.log_collision(uav.id, self._step_count, obs_info)
                     self._ep_logger.log_event("collision_obstacle")
                     break
 
@@ -483,7 +547,6 @@ class SARBaseEnv(gym.Env):
         done_reason: str | None,
         truncated:   bool,
     ) -> None:
-        """✅ BUG-ENV-05 FIX: Multiple key fallbacks."""
         success = metrics.get("success", False)
         status  = "SUCCESS" if success else "FAIL"
         reason  = done_reason or ("truncated" if truncated else "unknown")
@@ -494,23 +557,19 @@ class SARBaseEnv(gym.Env):
             or metrics.get("final_coverage")
             or 0.0
         )
-        v_found = (
-            metrics.get("victims_found")
-            or metrics.get("n_found")
-            or 0
-        )
-        v_total = (
-            metrics.get("total_victims")
-            or metrics.get("victims_total")
-            or 0
-        )
+        v_found = metrics.get("victims_found") or metrics.get("n_found") or 0
+        v_total = metrics.get("total_victims") or metrics.get("victims_total") or 0
+
+        total_landings    = metrics.get("total_landings", 0)
+        total_charge_time = metrics.get("total_charge_time", 0)
 
         print(
             f"[ENV] Ep {self._episode_id} {status} | "
             f"reason={reason} | "
             f"steps={self._step_count} | "
-            f"cov={cov:.1%} | "
+            f"cov={cov:.1f}% | "
             f"victims={v_found}/{v_total} | "
+            f"landings={total_landings}× ({total_charge_time} charge steps) | "
             f"ep_reward={self._episode_reward_sum:.1f}"
         )
 
@@ -531,7 +590,7 @@ class SARBaseEnv(gym.Env):
             1 for u in uavs for obs in obstacles
             if isinstance(obs, DangerZone) and obs.is_inside(u.pos)
         )
-        n_collisions   = len(getattr(self._reward_fn, "_collision_penalized",    set()))
+        n_collisions   = len(getattr(self._reward_fn, "_collision_penalized",     set()))
         n_dead_battery = len(getattr(self._reward_fn, "_battery_death_penalized", set()))
 
         emergency_pct = getattr(
@@ -543,33 +602,50 @@ class SARBaseEnv(gym.Env):
 
         worst_str = "N/A"
         if self._step_rewards_history:
-            worst = sorted(self._step_rewards_history, key=lambda x: x["total"])[:3]
-            worst_str = ", ".join(f"step {s['step']}={s['total']:.1f}" for s in worst)
+            worst     = sorted(self._step_rewards_history, key=lambda x: x["total"])[:3]
+            worst_str = ", ".join(
+                f"step {s['step']}={s['total']:.1f}" for s in worst
+            )
 
+        logger.warning(
+            "\n%s\n"
+            "⚠️  EXTREME EPISODE REWARD\n"
             "  Ep=%d | reward=%.1f | steps=%d | reason=%s\n"
             "  cov=%.1f%% | victims=%d/%d\n"
-            "=" * 60, "=" * 60,
+            "  in_danger=%d | collisions=%d | battery_dead=%d "
+            "| battery_critical=%d | disabled=%d\n"
+            "  Worst steps: %s\n"
+            "%s",
+            "=" * 60,
             self._episode_id, episode_reward, self._step_count,
             done_reason or ("truncated" if truncated else "N/A"),
             cur_coverage * 100, n_found, n_total,
-            n_in_danger, n_collisions, n_dead_battery, n_battery_critical, n_disabled,
-            worst_str, "=" * 60,
-        
+            n_in_danger, n_collisions, n_dead_battery,
+            n_battery_critical, n_disabled,
+            worst_str,
+            "=" * 60,
+        )
 
         if self.verbose >= 3:
             import json, os
             os.makedirs("results/extreme_episodes", exist_ok=True)
-            fname = f"results/extreme_episodes/ep_{self._episode_id}_{episode_reward:.0f}.json"
+            fname = (
+                f"results/extreme_episodes/"
+                f"ep_{self._episode_id}_{episode_reward:.0f}.json"
+            )
             try:
                 with open(fname, "w") as f:
-                    json.dump({
-                        "episode_id": self._episode_id,
-                        "reward": episode_reward,
-                        "steps": self._step_count,
-                        "step_rewards": self._step_rewards_history,
-                    }, f, indent=2)
+                    json.dump(
+                        {
+                            "episode_id":   self._episode_id,
+                            "reward":       episode_reward,
+                            "steps":        self._step_count,
+                            "step_rewards": self._step_rewards_history,
+                        },
+                        f, indent=2,
+                    )
             except Exception as e:
-                logger.warning("Failed to save: %s", e)
+                logger.warning("Failed to save extreme episode: %s", e)
 
     def _get_uav_from_list(self, uid: int, uavs: list) -> UAV | None:
         for u in uavs:

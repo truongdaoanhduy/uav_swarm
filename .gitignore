@@ -17,11 +17,11 @@ env/
 results/
 *.pt
 *.pth
-
+*.png
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
-
+*.gif
 # IDE
 .vscode/
 .idea/
