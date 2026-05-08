@@ -175,12 +175,12 @@ def _verify_stages() -> None:
         f"phải lớn hơn HARD ({STAGE_HARD.coverage_pressure_m2_per_uav:.0f})"
     )
 
-    print(
-        f"✅ Stage verification passed:\n"
-        f"   HARD:    {STAGE_HARD.describe()}\n"
-        f"   EXTREME: {STAGE_EXTREME.describe()}\n"
-        f"   TRANSFER:{STAGE_TRANSFER.describe()}"
-    )
+    # print(
+    #     f"✅ Stage verification passed:\n"
+    #     f"   HARD:    {STAGE_HARD.describe()}\n"
+    #     f"   EXTREME: {STAGE_EXTREME.describe()}\n"
+    #     f"   TRANSFER:{STAGE_TRANSFER.describe()}"
+    # )
 
 
 _verify_stages()
