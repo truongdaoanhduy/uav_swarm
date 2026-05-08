@@ -102,60 +102,60 @@ class StageConfig:
 # STAGE DEFINITIONS
 # ══════════════════════════════════════════════════════════════════════
 
-STAGE_EASY = StageConfig(
-    name="easy",
+# STAGE_EASY = StageConfig(
+#     name="easy",
 
-    # ══ MAP: 150×150 = 22,500 m² ══════════════════════════════
-    map_size=150,
-    n_uav=4,
-    # coverage_pressure = 5,625 m²/UAV ← BASELINE
+#     # ══ MAP: 150×150 = 22,500 m² ══════════════════════════════
+#     map_size=150,
+#     n_uav=4,
+#     # coverage_pressure = 5,625 m²/UAV ← BASELINE
 
-    # ══ VICTIMS: density = (10+14)/2 / 22500 * 1000 = 0.53/1000m² ══
-    n_victims_min=10,
-    n_victims_max=14,
+#     # ══ VICTIMS: density = (10+14)/2 / 22500 * 1000 = 0.53/1000m² ══
+#     n_victims_min=10,
+#     n_victims_max=14,
 
-    # ══ OBSTACLES: density = (6+2)/22500*1000 = 0.36/1000m² ══
-    n_debris=6,
-    n_danger_total=2,
+#     # ══ OBSTACLES: density = (6+2)/22500*1000 = 0.36/1000m² ══
+#     n_debris=6,
+#     n_danger_total=2,
 
-    # ══ STATION: generous (no bottleneck) ══════════════════════
-    station_capacity=2,
+#     # ══ STATION: generous (no bottleneck) ══════════════════════
+#     station_capacity=2,
 
-    # ══ TIME: 300/22500 = 0.0133 steps/m² ═════════════════════
-    max_steps=300,
+#     # ══ TIME: 300/22500 = 0.0133 steps/m² ═════════════════════
+#     max_steps=300,
 
-    min_episodes=200,
-    advance_coverage=0.70,
-    advance_victims=0.80,
-)
+#     min_episodes=200,
+#     advance_coverage=0.70,
+#     advance_victims=0.80,
+# )
 
-STAGE_MEDIUM = StageConfig(
-    name="medium",
+# STAGE_MEDIUM = StageConfig(
+#     name="medium",
 
-    # ══ MAP: 200×200 = 40,000 m² ══════════════════════════════
-    map_size=200,
-    n_uav=4,
-    # coverage_pressure = 10,000 m²/UAV ← 1.78× EASY
+#     # ══ MAP: 200×200 = 40,000 m² ══════════════════════════════
+#     map_size=200,
+#     n_uav=4,
+#     # coverage_pressure = 10,000 m²/UAV ← 1.78× EASY
 
-    # ══ VICTIMS: density = (18+24)/2 / 40000 * 1000 = 0.53/1000m² ══
-    # Giữ nguyên density → difficulty chỉ từ coverage pressure
-    n_victims_min=18,
-    n_victims_max=24,
+#     # ══ VICTIMS: density = (18+24)/2 / 40000 * 1000 = 0.53/1000m² ══
+#     # Giữ nguyên density → difficulty chỉ từ coverage pressure
+#     n_victims_min=18,
+#     n_victims_max=24,
 
-    # ══ OBSTACLES: density = (10+4)/40000*1000 = 0.35/1000m² ══
-    n_debris=10,
-    n_danger_total=4,
+#     # ══ OBSTACLES: density = (10+4)/40000*1000 = 0.35/1000m² ══
+#     n_debris=10,
+#     n_danger_total=4,
 
-    # ══ STATION: bottleneck introduced ════════════════════════
-    station_capacity=1,
+#     # ══ STATION: bottleneck introduced ════════════════════════
+#     station_capacity=1,
 
-    # ══ TIME: 350/40000 = 0.0088 steps/m² (harder) ═══════════
-    max_steps=350,
+#     # ══ TIME: 350/40000 = 0.0088 steps/m² (harder) ═══════════
+#     max_steps=350,
 
-    min_episodes=300,
-    advance_coverage=0.65,
-    advance_victims=0.75,
-)
+#     min_episodes=300,
+#     advance_coverage=0.65,
+#     advance_victims=0.75,
+# )
 
 STAGE_HARD = StageConfig(
     name="hard",
