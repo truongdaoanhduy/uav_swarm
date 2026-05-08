@@ -15,7 +15,7 @@ env/
 
 # Results (quá nặng, không push)
 results/
-*.pt
+# *.pt
 *.pth
 *.png
 # Jupyter
