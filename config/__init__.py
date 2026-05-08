@@ -13,8 +13,8 @@ from .obs import ObsConfig
 from .train import TrainConfig
 from .curriculum_config import (
     StageConfig,
-    STAGE_HARD,
-    CURRICULUM_STAGES,
+    STAGE_HARD,STAGE_EXTREME,STAGE_TRANSFER
+    ,
 )
 import sys
 import os
@@ -39,5 +39,6 @@ __all__ = [
     # Curriculum
     "StageConfig",
     "STAGE_HARD",
-    "CURRICULUM_STAGES",
+    "STAGE_EXTREME",
+    "STAGE_TRANSFER"
 ]
