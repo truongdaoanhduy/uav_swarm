@@ -363,68 +363,91 @@ def save_frame_png(frame: np.ndarray, path: Path, title: str = ""):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # Giảm kích thước cho 3D
+        figsize = (10, 7) if frame.shape[0] > 800 else (12, 8)
+        dpi = 72 if frame.shape[0] > 800 else 100
+        
+        fig, ax = plt.subplots(figsize=figsize)
         ax.imshow(frame)
         ax.axis("off")
         if title:
-            ax.set_title(title, fontsize=11, pad=6)
-        fig.tight_layout(pad=0.5)
-        fig.savefig(path, dpi=100, bbox_inches="tight")
+            ax.set_title(title, fontsize=10, pad=5)
+        
+        fig.tight_layout(pad=0.3)
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
+        
     except Exception as e:
         print(f"  ⚠️  PNG save failed: {e}")
 
 
 def save_gif_file(frames: list, path: Path, fps: int = 10) -> bool:
+    """
+    Lưu GIF với tối ưu memory cho 3D plots
+    """
+    import gc
+    
     valid = [f for f in frames if f is not None]
     if not valid:
         return False
 
-    # Pillow
     try:
         from PIL import Image
+        
+        # Giảm chất lượng nếu quá nhiều frames
+        optimize = len(valid) > 200
+        
+        print(f"  💾 Creating GIF with {len(valid)} frames (optimize={optimize})...")
+        
         imgs = [Image.fromarray(f.astype(np.uint8)) for f in valid]
+        
         imgs[0].save(
-            str(path), save_all=True, append_images=imgs[1:],
-            duration=1000 // fps, loop=0, optimize=False,
+            str(path), 
+            save_all=True, 
+            append_images=imgs[1:],
+            duration=1000 // fps, 
+            loop=0, 
+            optimize=optimize,  # ← Bật optimize cho nhiều frames
+            quality=85 if optimize else 95,  # Giảm quality nếu cần
         )
-        print(f"  ✅ GIF: {path.name} ({len(imgs)} frames, {fps}fps)")
+        
+        # Giải phóng RAM
+        imgs.clear()
+        del imgs
+        valid.clear()
+        gc.collect()
+        
+        print(f"  ✅ GIF: {path.name} ({len(frames)} frames, {fps}fps)")
         return True
+        
     except ImportError:
-        pass
+        print("  ⚠️  PIL not available")
+        return False
     except Exception as e:
-        print(f"  ⚠️  Pillow: {e}")
-
-    # imageio
-    try:
-        import imageio
-        imageio.mimsave(str(path), [f.astype(np.uint8) for f in valid], fps=fps)
-        print(f"  ✅ GIF via imageio: {path.name}")
-        return True
-    except Exception as e:
-        print(f"  ⚠️  imageio: {e}")
-
-    # matplotlib
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.animation as animation
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.axis("off")
-        im = ax.imshow(valid[0])
-        ani = animation.FuncAnimation(
-            fig, lambda i: [im.set_data(valid[i])] or [im],
-            frames=len(valid), interval=1000 // fps, blit=True,
-        )
-        ani.save(str(path), writer="pillow", fps=fps)
-        plt.close(fig)
-        print(f"  ✅ GIF via matplotlib: {path.name}")
-        return True
-    except Exception as e:
-        print(f"  ⚠️  matplotlib: {e}")
-
-    return False
+        print(f"  ⚠️  Pillow failed: {e}")
+        
+        # Fallback: imageio
+        try:
+            import imageio
+            # Giảm frame rate nếu quá nhiều frames
+            sample_rate = 2 if len(valid) > 500 else 1
+            sampled = valid[::sample_rate]
+            
+            imageio.mimsave(
+                str(path), 
+                [f.astype(np.uint8) for f in sampled], 
+                fps=fps//sample_rate
+            )
+            print(f"  ✅ GIF via imageio: {path.name} ({len(sampled)} frames)")
+            
+            del sampled
+            gc.collect()
+            return True
+            
+        except Exception as e2:
+            print(f"  ❌ imageio also failed: {e2}")
+            return False
 
 
 def save_summary_plot(
@@ -517,6 +540,13 @@ def run_episode(
     save_frames: bool = True,
 ) -> Tuple[List[np.ndarray], dict]:
     from env_setup.sar_pettingzoo_env import SARPettingZooEnv
+    import gc  # ← THÊM import
+
+    # ═══════════════════════════════════════════════════════════════
+    # 🔥 FIX: GIẢM SỐ FRAMES CHO 3D MODE
+    # ═══════════════════════════════════════════════════════════════
+    FRAME_SKIP = 15 if config.viz_mode == "3d" else 5  # Chỉ lưu mỗi 15 frames cho 3D
+    # ═══════════════════════════════════════════════════════════════
 
     env      = SARPettingZooEnv(config, render_mode="rgb_array")
     n_agents = config.env.n_uav
@@ -534,6 +564,10 @@ def run_episode(
 
     print(f"\n  🚁 {algo.upper()} | {stage.upper()} "
           f"| ep={ep_idx+1} | seed={seed}")
+    
+    # Hiển thị frame skip nếu 3D
+    if config.viz_mode == "3d":
+        print(f"  ℹ️  3D mode: saving every {FRAME_SKIP} frames to prevent OOM")
 
     while not done:
         obs_arr = np.array(
@@ -559,16 +593,27 @@ def run_episode(
         ep_steps  += 1
         done       = any(term_d.values()) or any(trunc_d.values())
 
-        frame = env.render()
-        if frame is not None:
-            frames.append(frame.copy())
-            if save_frames:
-                save_frame_png(
-                    frame,
-                    frames_dir / f"frame_{ep_steps:04d}.png",
-                    title=(f"{algo.upper()} | {stage.upper()} "
-                           f"| Step {ep_steps}/{config.env.max_steps}"),
-                )
+        # ═══════════════════════════════════════════════════════════════
+        # 🔥 FIX: CHỈ RENDER VÀ LƯU MỖI FRAME_SKIP FRAMES
+        # ═══════════════════════════════════════════════════════════════
+        should_save = (ep_steps % FRAME_SKIP == 0) or done
+        
+        if should_save:
+            frame = env.render()
+            if frame is not None:
+                frames.append(frame.copy())
+                if save_frames:
+                    save_frame_png(
+                        frame,
+                        frames_dir / f"frame_{ep_steps:04d}.png",
+                        title=(f"{algo.upper()} | {stage.upper()} "
+                               f"| Step {ep_steps}/{config.env.max_steps}"),
+                    )
+                
+                # Giải phóng RAM mỗi 100 frames
+                if len(frames) % 100 == 0:
+                    gc.collect()
+        # ═══════════════════════════════════════════════════════════════
 
         if ep_steps % 100 == 0 or done:
             u0  = info.get("uav_0", {})
@@ -590,9 +635,11 @@ def run_episode(
     done_reason = ep_metrics.get("done_reason",        u0.get("done_reason",    "?"))
 
     env.close()
+    
     print(f"  ✅ ep done | rew={ep_reward:+.1f} "
           f"cov={coverage*100:.1f}% vic={victims_f}/{victims_t} "
           f"{'✓' if success else '✗'} [{done_reason}]")
+    print(f"  📊 Total frames saved: {len(frames)} (from {ep_steps} steps)")
 
     return frames, {
         "ep_reward": float(ep_reward),
