@@ -16,7 +16,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from hf_upload import HFDownloader, HF_REPO_ID
+from hf_upload import HFDownloader
 
 
 # ── Màu cố định cho từng thuật toán ──────────────────────────────────────────
@@ -371,19 +371,19 @@ def main():
     )
 
     # Upload comparison plot lên HF
-    if args.save and Path(args.save).exists():
-        try:
-            from hf_upload import HFUploader
-            uploader = HFUploader()
-            uploader._get_api().upload_file(
-                path_or_fileobj = args.save,
-                path_in_repo    = f"comparisons/{Path(args.save).name}",
-                repo_id         = HF_REPO_ID,
-                repo_type       = "dataset",
-            )
-            print(f"📤 Plot uploaded → comparisons/{Path(args.save).name}")
-        except Exception as e:
-            print(f"⚠️  Upload skipped: {e}")
+    # if args.save and Path(args.save).exists():
+    #     try:
+    #         from hf_upload import HFUploader
+    #         uploader = HFUploader()
+    #         uploader._get_api().upload_file(
+    #             path_or_fileobj = args.save,
+    #             path_in_repo    = f"comparisons/{Path(args.save).name}",
+    #             repo_id         = HF_REPO_ID,
+    #             repo_type       = "dataset",
+    #         )
+    #         print(f"📤 Plot uploaded → comparisons/{Path(args.save).name}")
+    #     except Exception as e:
+    #         print(f"⚠️  Upload skipped: {e}")
 
 if __name__ == "__main__":
     main()
