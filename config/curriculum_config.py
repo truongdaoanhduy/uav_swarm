@@ -94,7 +94,7 @@ STAGE_EXTREME = StageConfig(
     name="extreme",
 
     # ══ MAP: 350×350 = 122,500 m² (gấp đôi HARD) ══════════
-    map_size=350,
+    map_size=400,
     n_uav=4,
     # coverage_pressure = 30,625 m²/UAV ← 2× HARD
 
@@ -122,7 +122,7 @@ STAGE_EXTREME = StageConfig(
 # ✅ TRANSFER: TĂNG debris 54→60, danger 12→18
 STAGE_TRANSFER = StageConfig(
     name="transfer",
-    map_size=300,
+    map_size=350,
     n_uav=4,
     
     # Victims giữ nguyên
