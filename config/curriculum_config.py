@@ -112,7 +112,7 @@ STAGE_EXTREME = StageConfig(
     station_capacity=1,
 
     # ══ TIME: 5000/122500 = 0.041 steps/m² ════════════════
-    max_steps=5000,       # ← CHANGED: 4000→5000 (buffer thêm vì nhiều obstacles)
+    max_steps=100,       # ← CHANGED: 4000→5000 (buffer thêm vì nhiều obstacles)
 
     min_episodes=500,
     advance_coverage=0.55,
@@ -135,7 +135,7 @@ STAGE_TRANSFER = StageConfig(
     n_danger_total=18,    # ← CHANGED: 12→18 (2.25× HARD)
     
     station_capacity=1,
-    max_steps=5000,       # ← CHANGED: 3500→5000 (buffer cho obstacles)
+    max_steps=100,       # ← CHANGED: 3500→5000 (buffer cho obstacles)
     
     min_episodes=0,       # Eval only
     advance_coverage=0.0,
