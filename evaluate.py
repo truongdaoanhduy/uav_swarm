@@ -1204,6 +1204,59 @@ def quick_eval(
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _print_algo_summary(result):
+    """
+    In tóm tắt kết quả eval 1 algo.
+    
+    Args:
+        result: AlgoResult dataclass
+    """
+    print(f"\n{'─'*65}")
+    print(f"  📊 {result.algo.upper()} Results ({result.stage.upper()})")
+    print(f"{'─'*65}")
+    print(f"  Episodes     : {result.n_episodes:>6,}")
+    print(f"  Checkpoint   : {Path(result.checkpoint).name}")
+    print(f"\n  Performance:")
+    print(f"    Reward       : {result.reward_mean:>8.1f} ± {result.reward_std:>6.1f}  (median: {result.reward_median:>7.1f})")
+    
+    # ✅ FIX: Handle coverage ở cả [0,1] và [0,100] range
+    cov_mean = result.coverage_mean
+    cov_std  = result.coverage_std
+    if cov_mean <= 1.0:  # Đã normalized [0, 1]
+        cov_mean *= 100
+        cov_std  *= 100
+    
+    vic_mean = result.victim_rate_mean
+    vic_std  = result.victim_rate_std
+    if vic_mean <= 1.0:
+        vic_mean *= 100
+        vic_std  *= 100
+    
+    suc_rate = result.success_rate
+    if suc_rate <= 1.0:
+        suc_rate *= 100
+    
+    print(f"    Coverage     : {cov_mean:>7.1f}% ± {cov_std:>5.1f}%")
+    print(f"    Victim Rate  : {vic_mean:>7.1f}% ± {vic_std:>5.1f}%")
+    print(f"    Success Rate : {suc_rate:>7.1f}%")
+    print(f"    Episode Len  : {result.length_mean:>7.1f} steps")
+    
+    # Distribution stats
+    if result.rewards:
+        print(f"\n  Distribution (n={len(result.rewards)}):")
+        print(f"    Reward   : min={min(result.rewards):>7.1f}  max={max(result.rewards):>7.1f}")
+        
+        cov_vals = [x * 100 if x <= 1.0 else x for x in result.coverages]
+        print(f"    Coverage : min={min(cov_vals):>6.1f}%  max={max(cov_vals):>6.1f}%")
+        
+        vic_vals = [x * 100 if x <= 1.0 else x for x in result.victim_rates]
+        print(f"    Victims  : min={min(vic_vals):>6.1f}%  max={max(vic_vals):>6.1f}%")
+        
+        n_success = sum(result.successes)
+        print(f"    Success  : {n_success}/{len(result.successes)} episodes")
+    
+    print(f"{'─'*65}\n")
+
 def _json_safe(obj):
     """JSON serializer cho numpy types."""
     if isinstance(obj, (np.integer,)):
@@ -1215,7 +1268,6 @@ def _json_safe(obj):
     if isinstance(obj, bool):
         return bool(obj)
     return str(obj)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CLI
