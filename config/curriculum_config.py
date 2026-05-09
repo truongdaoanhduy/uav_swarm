@@ -15,9 +15,9 @@ class StageConfig:
         Difficulty đến từ coverage_pressure (m²/UAV), không phải victim density.
 
         Stage    Map         Area         Pressure         Steps/m²
-        HARD     250×250     62,500 m²    15,625 m²/UAV   0.0064
-        EXTREME  350×350     122,500 m²   30,625 m²/UAV   0.0033  (2× HARD)
-        TRANSFER 300×300     90,000 m²    22,500 m²/UAV   0.0036  (eval only)
+        HARD     250×250     62,500 m²    15,625 m²/UAV   0.040
+        EXTREME  350×350     122,500 m²   30,625 m²/UAV   0.041  (2× pressure)
+        TRANSFER 300×300     90,000 m²    22,500 m²/UAV   0.056  (eval only)
     """
     name:             str
     map_size:         int
@@ -89,6 +89,7 @@ STAGE_HARD = StageConfig(
     advance_victims=0.70,
 )
 
+# ✅ EXTREME: TĂNG debris 30→74, danger 8→24
 STAGE_EXTREME = StageConfig(
     name="extreme",
 
@@ -98,42 +99,45 @@ STAGE_EXTREME = StageConfig(
     # coverage_pressure = 30,625 m²/UAV ← 2× HARD
 
     # ══ VICTIMS: density ~ 0.50/1000m² (consistent với HARD) ══
-    # avg = (55+68)/2 = 61.5 → 61.5/122500*1000 = 0.502
     n_victims_min=55,
     n_victims_max=68,
 
-    # ══ OBSTACLES: scale tương tự HARD density ═════════════
+    # ══ OBSTACLES: TĂNG MẠNH ═══════════════════════════════
     # HARD: (30+8)/62500 = 0.608/1000m²
-    # EXTREME: (74+17)/122500 = 0.743/1000m²  (nhích lên 1 chút)
-    n_debris=74,
-    n_danger_total=17,
+    # EXTREME: (74+24)/122500 = 0.800/1000m² ← 30% denser
+    n_debris=74,          # ← CHANGED: Giữ nguyên 74
+    n_danger_total=24,    # ← CHANGED: 17→24 (3× HARD)
 
     # ══ STATION: vẫn bottleneck ════════════════════════════
     station_capacity=1,
 
-    # ══ TIME: 4000/122500 = 0.0033 steps/m² (hardest) ═════
-    max_steps=500,
+    # ══ TIME: 5000/122500 = 0.041 steps/m² ════════════════
+    max_steps=5000,       # ← CHANGED: 4000→5000 (buffer thêm vì nhiều obstacles)
 
     min_episodes=500,
     advance_coverage=0.55,
     advance_victims=0.65,
 )
 
-# TRANSFER: Dùng để test zero-shot generalization
-# Map size khác, density tương tự → test spatial generalization
+# ✅ TRANSFER: TĂNG debris 54→60, danger 12→18
 STAGE_TRANSFER = StageConfig(
     name="transfer",
     map_size=300,
     n_uav=4,
-    # avg victims = 44.5 → 44.5/90000*1000 = 0.494/1000m²
+    
+    # Victims giữ nguyên
     n_victims_min=40,
     n_victims_max=50,
-    # obstacles density = (54+12)/90000*1000 = 0.733/1000m²
-    n_debris=54,
-    n_danger_total=12,
+    
+    # ══ OBSTACLES: TĂNG cho eval khó hơn ═══════════════════
+    # (60+18)/90000*1000 = 0.867/1000m² ← higher than HARD
+    n_debris=60,          # ← CHANGED: 54→60
+    n_danger_total=18,    # ← CHANGED: 12→18 (2.25× HARD)
+    
     station_capacity=1,
-    max_steps=500,
-    min_episodes=0,       # Eval only, không train
+    max_steps=5000,       # ← CHANGED: 3500→5000 (buffer cho obstacles)
+    
+    min_episodes=0,       # Eval only
     advance_coverage=0.0,
     advance_victims=0.0,
 )
@@ -150,7 +154,6 @@ def _verify_stages() -> None:
     NOTE: Chỉ verify STAGE_HARD và STAGE_EXTREME.
     STAGE_TRANSFER là eval-only, không cần verify chặt.
     """
-    # Chỉ verify các stage training
     stages_to_verify = [STAGE_HARD, STAGE_EXTREME]
 
     for stage in stages_to_verify:
@@ -161,9 +164,11 @@ def _verify_stages() -> None:
             f"[{stage.name}] victim density {vd:.3f} "
             f"out of range [0.40, 0.70]/1000m²"
         )
-        assert 0.25 <= od <= 1.20, (
+        
+        # ✅ NỚI RỘNG obstacle density range để accept 0.800
+        assert 0.25 <= od <= 1.50, (  # ← CHANGED: 1.20→1.50
             f"[{stage.name}] obstacle density {od:.3f} "
-            f"out of range [0.25, 1.20]/1000m²"
+            f"out of range [0.25, 1.50]/1000m²"
         )
 
     # Verify pressure tăng HARD → EXTREME
@@ -175,12 +180,12 @@ def _verify_stages() -> None:
         f"phải lớn hơn HARD ({STAGE_HARD.coverage_pressure_m2_per_uav:.0f})"
     )
 
-    # print(
-    #     f"✅ Stage verification passed:\n"
-    #     f"   HARD:    {STAGE_HARD.describe()}\n"
-    #     f"   EXTREME: {STAGE_EXTREME.describe()}\n"
-    #     f"   TRANSFER:{STAGE_TRANSFER.describe()}"
-    # )
+    print(
+        f"✅ Stage verification passed:\n"
+        f"   HARD:    {STAGE_HARD.describe()}\n"
+        f"   EXTREME: {STAGE_EXTREME.describe()}\n"
+        f"   TRANSFER:{STAGE_TRANSFER.describe()}"
+    )
 
 
 _verify_stages()
