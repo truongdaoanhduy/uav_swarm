@@ -236,12 +236,95 @@ class Visualizer3D:
         ax.add_collection3d(poly)
 
     def _scene_obstacles(self, ax, obstacles):
-        from entities.obstacle import Debris, DangerZone
+        """
+        FIXED v3: Use hasattr instead of isinstance to avoid import path issues.
+        This ensures danger zones are always rendered regardless of import path.
+        """
+        n_debris  = 0
+        n_danger  = 0
+        
         for obs in obstacles:
-            if isinstance(obs, DangerZone):
+            # ✅ Check by attribute presence (không phụ thuộc import path)
+            if hasattr(obs, 'danger_type'):
                 self._draw_danger(ax, obs)
-            elif isinstance(obs, Debris):
+                n_danger += 1
+            elif hasattr(obs, 'height_3d') or hasattr(obs, 'shape'):
                 self._draw_debris(ax, obs)
+                n_debris += 1
+        
+        # Debug info (chỉ hiện lần đầu)
+        if not hasattr(self, '_obstacle_logged'):
+            import logging
+            logging.getLogger(__name__).info(
+                f"Visualizer: rendering {n_debris} debris + {n_danger} danger zones"
+            )
+            self._obstacle_logged = True
+
+    def _draw_danger(self, ax, z):
+        """
+        FIXED v3: Handle both attribute naming conventions.
+        """
+        cx, cy = float(z.pos[0]), float(z.pos[1])
+        dtype  = getattr(z, "danger_type", "fire")
+        col, alpha = _DANGER_COLORS.get(dtype, ("#FF5722", 0.18))
+
+        # ✅ FIX: Handle radius vs width for different shapes
+        shape = getattr(z, "shape", "circle")
+        r = getattr(z, "radius", None)
+        
+        if r is None:
+            if shape == "rectangle":
+                # Rectangle: dùng half-diagonal làm approximate radius
+                w  = float(getattr(z, "width",     10.0))
+                h2 = float(getattr(z, "height_2d", 10.0))
+                r  = (w + h2) / 4.0  # Average half-dimension
+            elif hasattr(z, "_get_fallback_radius"):
+                r = float(z._get_fallback_radius())
+            else:
+                r = 5.0
+        r = float(r)
+        
+        # ✅ FIX: Try multiple attribute names for altitude limit
+        z_top_raw = (
+            getattr(z, "max_altitude", None)
+            or getattr(z, "max_height",   None)
+            or getattr(z, "height_3d",    None)
+            or self._z_max
+        )
+        
+        # Cap visualization height at 10m (không che map)
+        try:
+            z_top = min(float(z_top_raw), 10.0)
+        except (TypeError, ValueError):
+            z_top = 10.0  # inf case (radiation)
+
+        # Draw cylinder
+        if shape == "circle":
+            verts = _cylinder_faces(cx, cy, r, 0, z_top, n=18)
+            ax.add_collection3d(Poly3DCollection(
+                verts, facecolor=col, edgecolor=col, lw=0.2, alpha=alpha))
+            
+            # Ground circle
+            xs, ys = _circle_xy(cx, cy, r)
+            ax.plot(xs, ys, np.zeros_like(xs), color=col, lw=1.5, alpha=0.8)
+            
+        elif shape == "rectangle":
+            w  = float(getattr(z, "width",     10.0))
+            h2 = float(getattr(z, "height_2d", 10.0))
+            verts = _box_faces(cx, cy, w, h2, 0, z_top)
+            ax.add_collection3d(Poly3DCollection(
+                verts, facecolor=col, edgecolor=col, lw=0.2, alpha=alpha * 0.8))
+        else:
+            # Fallback: circle
+            verts = _cylinder_faces(cx, cy, r, 0, z_top, n=18)
+            ax.add_collection3d(Poly3DCollection(
+                verts, facecolor=col, edgecolor=col, lw=0.2, alpha=alpha))
+            xs, ys = _circle_xy(cx, cy, r)
+            ax.plot(xs, ys, np.zeros_like(xs), color=col, lw=1.5, alpha=0.8)
+
+        # Label
+        ax.text(cx, cy, z_top + 0.5, dtype[:3].upper(),
+                color=col, fontsize=6, ha="center", fontweight="bold")
 
     def _draw_debris(self, ax, d):
         cx, cy  = float(d.pos[0]), float(d.pos[1])
@@ -268,27 +351,40 @@ class Visualizer3D:
                 color="#FFCCBC", fontsize=5, ha="center")
 
     def _draw_danger(self, ax, z):
-        cx, cy  = float(z.pos[0]), float(z.pos[1])
-        dtype   = getattr(z, "danger_type", "fire")
+        cx, cy = float(z.pos[0]), float(z.pos[1])
+        dtype  = getattr(z, "danger_type", "fire")
         col, alpha = _DANGER_COLORS.get(dtype, ("#FF5722", 0.18))
 
+        # ✅ FIX: Handle cả radius và width (tùy shape)
         r = getattr(z, "radius", None)
         if r is None:
-            r = z._get_fallback_radius() if hasattr(z,"_get_fallback_radius") else 5.0
+            # Rectangle shape → dùng width/2
+            w = getattr(z, "width", None)
+            if w is not None:
+                r = float(w) / 2.0
+            elif hasattr(z, "_get_fallback_radius"):
+                r = z._get_fallback_radius()
+            else:
+                r = 5.0
         r = float(r)
 
-        # FIX: Giới hạn height hiển thị = 10m (không che map)
-        z_top = min(float(getattr(z, "max_altitude", self._z_max)), 10.0)
+        # ✅ FIX: Handle cả max_altitude và max_height attribute names
+        z_top_raw = (
+            getattr(z, "max_altitude", None)
+            or getattr(z, "max_height", None)
+            or self._z_max
+        )
+        z_top = min(float(z_top_raw), 10.0)  # Cap at 10m
 
         verts = _cylinder_faces(cx, cy, r, 0, z_top, n=18)
         ax.add_collection3d(Poly3DCollection(
             verts, facecolor=col, edgecolor=col, lw=0.2, alpha=alpha))
 
-        # Ground circle rõ hơn
+        # Ground circle
         xs, ys = _circle_xy(cx, cy, r)
         ax.plot(xs, ys, np.zeros_like(xs), color=col, lw=1.5, alpha=0.8)
 
-        # Label ngắn
+        # Label
         ax.text(cx, cy, z_top + 0.5, dtype[:3].upper(),
                 color=col, fontsize=6, ha="center", fontweight="bold")
 
