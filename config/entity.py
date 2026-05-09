@@ -70,7 +70,9 @@ class ObstacleConfig:
     # ══════════════════════════════════════════════════════════
     # DEBRIS
     # ══════════════════════════════════════════════════════════
-    n_debris: int = 6
+    # n_debris: int = 6
+    n_debris: int = 50  # ← CHANGED: Much denser obstacle field
+
     # train
     # debris_width_min_m: float = 2.0    # min XY footprint (meters)
     # debris_width_max_m: float = 5.0    # max XY footprint (meters)
@@ -87,7 +89,8 @@ class ObstacleConfig:
     # ══════════════════════════════════════════════════════════
     # DANGER ZONES
     # ══════════════════════════════════════════════════════════
-    n_danger_total: int = 4
+    # n_danger_total: int = 4
+    n_danger_total: int = 24  # ← CHANGED: 6× more danger zones
 
     # ══════════════════════════════════════════════════════════
     # BACKWARD COMPATIBILITY
@@ -129,11 +132,11 @@ class DangerZoneConfig:
     # })
     # test
     heights: Dict[str, float] = field(default_factory=lambda: {
-        "gas":       6.0,
-        "fire":      22.0,
-        "smoke":     30.0,
-        "collapse":  18.0,
-        "radiation": np.inf,
+        "gas":       6.0,      # ← CHANGED: 3→6m
+        "fire":      22.0,     # ← CHANGED: 15→22m
+        "smoke":     30.0,     # ← CHANGED: 25→30m
+        "collapse":  18.0,     # ← CHANGED: 10→18m
+        "radiation": np.inf,   # Still blocks all altitudes
     })
 
     # REBALANCED: Scale down ~5× so với cũ
@@ -158,19 +161,27 @@ class DangerZoneConfig:
     #     "radiation": 1,
     # })
     max_counts: Dict[str, int] = field(default_factory=lambda: {
-        "gas":       6,
-        "fire":      4,
-        "smoke":     4,
-        "collapse":  6,
-        "radiation": 4,
-    })
+        "gas":       6,   # ← CHANGED: 3→6
+        "fire":      4,   # ← CHANGED: 2→4
+        "smoke":     4,   # ← CHANGED: 2→4
+        "collapse":  6,   # ← CHANGED: 3→6
+        "radiation": 4,   # ← CHANGED: 1→4 (nhiều radiation zones!)
+    })  # Tổng max = 24 (khớp với n_danger_total)
+
     # train
+    # widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
+    #     "gas":       (4.0,  8.0),
+    #     "fire":      (6.0,  12.0),
+    #     "smoke":     (10.0, 20.0),
+    #     "collapse":  (5.0,  10.0),
+    #     "radiation": (15.0, 25.0),
+    # })
     widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-        "gas":       (4.0,  8.0),
-        "fire":      (6.0,  12.0),
-        "smoke":     (10.0, 20.0),
-        "collapse":  (5.0,  10.0),
-        "radiation": (15.0, 25.0),
+        "gas":       (5.0,  10.0),   # ← CHANGED: (4,8) → (5,10)
+        "fire":      (6.0,  12.0),   # Giữ nguyên
+        "smoke":     (12.0, 24.0),   # ← CHANGED: (10,20) → (12,24)
+        "collapse":  (8.0,  18.0),   # ← CHANGED: (5,10) → (8,18)
+        "radiation": (20.0, 30.0),   # ← CHANGED: (15,25) → (20,30)
     })
 
     # test
