@@ -71,16 +71,23 @@ class ObstacleConfig:
     # DEBRIS
     # ══════════════════════════════════════════════════════════
     n_debris: int = 6
-
-    debris_width_min_m: float = 2.0    # min XY footprint (meters)
-    debris_width_max_m: float = 5.0    # max XY footprint (meters)
-    debris_height_min_m: float = 3.0   # min 3D height (meters)
-    debris_height_max_m: float = 8.0   # max 3D height (meters)
+    # train
+    # debris_width_min_m: float = 2.0    # min XY footprint (meters)
+    # debris_width_max_m: float = 5.0    # max XY footprint (meters)
+    # debris_height_min_m: float = 3.0   # min 3D height (meters)
+    # debris_height_max_m: float = 8.0   # max 3D height (meters)
+    
+    # test
+    debris_width_min_m: float = 4.0    # min XY footprint (meters)
+    debris_width_max_m: float = 6.0    # max XY footprint (meters)
+    debris_height_min_m: float = 6.0   # min 3D height (meters)
+    debris_height_max_m: float = 15.0   # max 3D height (meters)
+    
 
     # ══════════════════════════════════════════════════════════
     # DANGER ZONES
     # ══════════════════════════════════════════════════════════
-    n_danger_total: int = 2
+    n_danger_total: int = 4
 
     # ══════════════════════════════════════════════════════════
     # BACKWARD COMPATIBILITY
@@ -112,11 +119,20 @@ class DangerZoneConfig:
         Danger zone penalty nên đủ để discourage UAV đi vào
         Nhưng không nên wipe toàn bộ episode reward
     """
+    # train
+    # heights: Dict[str, float] = field(default_factory=lambda: {
+    #     "gas":       3.0,
+    #     "fire":      15.0,
+    #     "smoke":     25.0,
+    #     "collapse":  10.0,
+    #     "radiation": np.inf,
+    # })
+    # test
     heights: Dict[str, float] = field(default_factory=lambda: {
-        "gas":       3.0,
-        "fire":      15.0,
-        "smoke":     25.0,
-        "collapse":  10.0,
+        "gas":       6.0,
+        "fire":      22.0,
+        "smoke":     30.0,
+        "collapse":  18.0,
         "radiation": np.inf,
     })
 
@@ -141,14 +157,23 @@ class DangerZoneConfig:
         "collapse":  3,
         "radiation": 1,
     })
+    # train
+    # widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
+    #     "gas":       (4.0,  8.0),
+    #     "fire":      (6.0,  12.0),
+    #     "smoke":     (10.0, 20.0),
+    #     "collapse":  (5.0,  10.0),
+    #     "radiation": (15.0, 25.0),
+    # })
 
+    # test
     widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-        "gas":       (4.0,  8.0),
-        "fire":      (6.0,  12.0),
-        "smoke":     (10.0, 20.0),
-        "collapse":  (5.0,  10.0),
-        "radiation": (15.0, 25.0),
-    })
+            "gas":       (5.0,  10.0),
+            "fire":      (6.0,  12.0),
+            "smoke":     (12.0, 24.0),
+            "collapse":  (8.0,  18.0),
+            "radiation": (20.0, 30.0),
+        })
 
     def validate(self) -> None:
         keys_heights   = set(self.heights.keys())
