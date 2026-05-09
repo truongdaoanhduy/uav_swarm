@@ -150,12 +150,19 @@ class DangerZoneConfig:
     # New radiation: -5/step  × 50 steps = -250  per zone visit
     # → Vẫn rất painful, nhưng không catastrophic
 
+    # max_counts: Dict[str, int] = field(default_factory=lambda: {
+    #     "gas":       3,
+    #     "fire":      2,
+    #     "smoke":     2,
+    #     "collapse":  3,
+    #     "radiation": 1,
+    # })
     max_counts: Dict[str, int] = field(default_factory=lambda: {
-        "gas":       3,
-        "fire":      2,
-        "smoke":     2,
-        "collapse":  3,
-        "radiation": 1,
+        "gas":       6,
+        "fire":      4,
+        "smoke":     4,
+        "collapse":  6,
+        "radiation": 4,
     })
     # train
     widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
