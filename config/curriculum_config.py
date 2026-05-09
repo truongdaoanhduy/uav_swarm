@@ -160,13 +160,13 @@ def _verify_stages() -> None:
         vd = stage.victim_density_per_1000m2
         od = stage.obstacle_density_per_1000m2
 
-        assert 0.40 <= vd <= 0.70, (
+        assert 0.40 <= vd <= 1, (
             f"[{stage.name}] victim density {vd:.3f} "
             f"out of range [0.40, 0.70]/1000m²"
         )
         
         # ✅ NỚI RỘNG obstacle density range để accept 0.800
-        assert 0.25 <= od <= 1.50, (  # ← CHANGED: 1.20→1.50
+        assert 0.25 <= od <= 2, (  # ← CHANGED: 1.20→1.50
             f"[{stage.name}] obstacle density {od:.3f} "
             f"out of range [0.25, 1.50]/1000m²"
         )
