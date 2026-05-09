@@ -158,22 +158,22 @@ class DangerZoneConfig:
         "radiation": 1,
     })
     # train
-    # widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-    #     "gas":       (4.0,  8.0),
-    #     "fire":      (6.0,  12.0),
-    #     "smoke":     (10.0, 20.0),
-    #     "collapse":  (5.0,  10.0),
-    #     "radiation": (15.0, 25.0),
-    # })
+    widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
+        "gas":       (4.0,  8.0),
+        "fire":      (6.0,  12.0),
+        "smoke":     (10.0, 20.0),
+        "collapse":  (5.0,  10.0),
+        "radiation": (15.0, 25.0),
+    })
 
     # test
-    widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-            "gas":       (5.0,  10.0),
-            "fire":      (6.0,  12.0),
-            "smoke":     (12.0, 24.0),
-            "collapse":  (8.0,  18.0),
-            "radiation": (20.0, 30.0),
-        })
+    # widths: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
+    #         "gas":       (5.0,  10.0),
+    #         "fire":      (6.0,  12.0),
+    #         "smoke":     (12.0, 24.0),
+    #         "collapse":  (8.0,  18.0),
+    #         "radiation": (20.0, 30.0),
+    #     })
 
     def validate(self) -> None:
         keys_heights   = set(self.heights.keys())
