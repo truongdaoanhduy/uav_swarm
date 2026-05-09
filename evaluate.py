@@ -597,6 +597,10 @@ def _evaluate_sequential(
 # PARALLEL EVAL (NEW - 4× faster)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PARALLEL EVAL (FIXED - tracking bug)
+# ══════════════════════════════════════════════════════════════════════════════
+
 def _evaluate_parallel(
     env_config: AppConfig,
     actor:      torch.nn.Module,
@@ -611,7 +615,7 @@ def _evaluate_parallel(
     """
     Parallel eval với VectorizedEnv.
     
-    Chạy n_envs episodes đồng thời → n_envs× faster.
+    FIXED: Episode tracking logic.
     """
     from tqdm import tqdm
     from env_setup.vec_env import VectorizedEnv
@@ -621,11 +625,14 @@ def _evaluate_parallel(
     
     results: List[EpisodeResult] = []
     
+    # ✅ FIX: Simple counter-based tracking
+    next_episode_id = 0  # Episode ID to assign when env finishes
+    
     # Track per-env state
-    env_episode_ids = list(range(n_envs))  # [0, 1, 2, 3]
     env_rewards     = np.zeros(n_envs, dtype=np.float32)
     env_step_counts = np.zeros(n_envs, dtype=np.int32)
     env_start_times = [time.time()] * n_envs
+    env_episode_ids = [-1] * n_envs  # Current episode ID per env (-1 = not started)
     
     pbar = tqdm(
         total=n_episodes,
@@ -636,17 +643,26 @@ def _evaluate_parallel(
     
     # Reset all envs
     obs_batch, global_obs_batch = vec_env.reset()
-    # obs_batch: [n_envs, n_agents, 80]
-    # global_obs_batch: [n_envs, 650]
     
-    completed_episodes = 0
+    # ✅ Assign initial episode IDs
+    for i in range(min(n_envs, n_episodes)):
+        env_episode_ids[i] = next_episode_id
+        next_episode_id += 1
     
-    while completed_episodes < n_episodes:
+    while len(results) < n_episodes:
         # ── Get actions for all envs ──────────────────────────────────────────
-        actions_batch = []  # [n_envs, n_agents, 4]
+        actions_batch = []
         
         for env_idx in range(n_envs):
-            env_obs = obs_batch[env_idx]  # [n_agents, 80]
+            # Skip envs that finished all episodes
+            if env_episode_ids[env_idx] == -1:
+                # Dummy action (env won't be used)
+                actions_batch.append(
+                    np.zeros((env_config.env.n_uav, 4), dtype=np.float32)
+                )
+                continue
+            
+            env_obs = obs_batch[env_idx]  # [n_agents, 68]
             env_actions = {}
             
             for agent_idx in range(env_config.env.n_uav):
@@ -666,24 +682,22 @@ def _evaluate_parallel(
         obs_batch, global_obs_batch, rewards_batch, dones, infos = vec_env.step(
             actions_batch
         )
-        # rewards_batch: [n_envs, n_agents]
-        # dones: [n_envs] bool
         
         # Accumulate
-        env_rewards += rewards_batch.sum(axis=1)  # Team reward
+        env_rewards += rewards_batch.sum(axis=1)
         env_step_counts += 1
         
         # ── Check done ────────────────────────────────────────────────────────
         for env_idx in range(n_envs):
+            # Skip inactive envs
+            if env_episode_ids[env_idx] == -1:
+                continue
+            
             if not dones[env_idx]:
                 continue
             
-            # Episode done for env_idx
+            # ✅ Episode done for env_idx
             ep_id = env_episode_ids[env_idx]
-            
-            if ep_id >= n_episodes:
-                # Đã đủ episodes, bỏ qua
-                continue
             
             # Extract metrics
             info = infos[env_idx]
@@ -716,7 +730,7 @@ def _evaluate_parallel(
             
             wall_time = time.time() - env_start_times[env_idx]
             
-            # Create result
+            # ✅ Create result
             result = EpisodeResult(
                 episode_id      = ep_id,
                 seed            = base_seed + ep_id * 7919,
@@ -736,8 +750,6 @@ def _evaluate_parallel(
             )
             results.append(result)
             
-            completed_episodes += 1
-            
             # Update progress
             recent = results[-min(10, len(results)):]
             pbar.set_postfix({
@@ -748,16 +760,22 @@ def _evaluate_parallel(
             })
             pbar.update(1)
             
-            # Reset env for next episode
-            if completed_episodes < n_episodes:
-                env_episode_ids[env_idx] = completed_episodes + n_envs - 1
+            # ✅ Assign next episode or mark inactive
+            if next_episode_id < n_episodes:
+                env_episode_ids[env_idx] = next_episode_id
+                next_episode_id += 1
+                # Reset tracking for new episode
                 env_rewards[env_idx] = 0.0
                 env_step_counts[env_idx] = 0
                 env_start_times[env_idx] = time.time()
-                # obs_batch[env_idx] đã được reset bởi vec_env.step()
+                # obs_batch[env_idx] already reset by vec_env
             else:
-                # Đủ episodes rồi
-                break
+                # No more episodes to run
+                env_episode_ids[env_idx] = -1
+        
+        # ✅ Early exit if all envs inactive
+        if all(eid == -1 for eid in env_episode_ids):
+            break
     
     pbar.close()
     vec_env.close()
