@@ -384,7 +384,7 @@ def save_frame_png(frame: np.ndarray, path: Path, title: str = ""):
 
 def save_gif_file(frames: list, path: Path, fps: int = 10) -> bool:
     """
-    Lưu GIF với tối ưu memory cho 3D plots
+    Lưu GIF với FPS động - TỰ ĐỘNG CHẬM LẠI
     """
     import gc
     
@@ -395,59 +395,55 @@ def save_gif_file(frames: list, path: Path, fps: int = 10) -> bool:
     try:
         from PIL import Image
         
-        # Giảm chất lượng nếu quá nhiều frames
-        optimize = len(valid) > 200
+        # ═══════════════════════════════════════════════════════════
+        # 🔥 FIX: BẮT BUỘC CHẬM LẠI CHO 3D VIZ
+        # ═══════════════════════════════════════════════════════════
+        # LUÔN dùng FPS thấp để dễ xem
+        actual_fps = 2  # ← 2 FPS = 500ms/frame = CHẬM ĐỂ XEM
         
-        print(f"  💾 Creating GIF with {len(valid)} frames (optimize={optimize})...")
+        # Thêm pause frames ở đầu và cuối
+        first_frame = valid[0]
+        last_frame = valid[-1]
         
-        imgs = [Image.fromarray(f.astype(np.uint8)) for f in valid]
+        pause_frames = [first_frame] * 20  # Pause 10s ở đầu (20 frames × 0.5s)
+        end_frames = [last_frame] * 40     # Pause 20s ở cuối (40 frames × 0.5s)
+        
+        all_frames = pause_frames + valid + end_frames
+        
+        total_duration = len(all_frames) / actual_fps
+        # ═══════════════════════════════════════════════════════════
+        
+        optimize = len(all_frames) > 200
+        
+        print(f"  💾 Creating SLOW GIF:")
+        print(f"      Frames: {len(all_frames)} ({len(valid)} + {len(pause_frames)+len(end_frames)} pause)")
+        print(f"      FPS: {actual_fps} (500ms per frame)")
+        print(f"      Duration: {total_duration:.1f}s (~{total_duration/60:.1f} min)")
+        
+        imgs = [Image.fromarray(f.astype(np.uint8)) for f in all_frames]
         
         imgs[0].save(
             str(path), 
             save_all=True, 
             append_images=imgs[1:],
-            duration=1000 // fps, 
+            duration=1000 // actual_fps,  # 500ms per frame
             loop=0, 
-            optimize=optimize,  # ← Bật optimize cho nhiều frames
-            quality=85 if optimize else 95,  # Giảm quality nếu cần
+            optimize=optimize,
+            quality=85 if optimize else 95,
         )
         
-        # Giải phóng RAM
+        # Cleanup
         imgs.clear()
-        del imgs
-        valid.clear()
+        del imgs, all_frames, pause_frames, end_frames
         gc.collect()
         
-        print(f"  ✅ GIF: {path.name} ({len(frames)} frames, {fps}fps)")
+        print(f"  ✅ GIF saved: {path.name}")
+        print(f"      View duration: {total_duration:.1f}s")
         return True
         
-    except ImportError:
-        print("  ⚠️  PIL not available")
-        return False
     except Exception as e:
-        print(f"  ⚠️  Pillow failed: {e}")
-        
-        # Fallback: imageio
-        try:
-            import imageio
-            # Giảm frame rate nếu quá nhiều frames
-            sample_rate = 2 if len(valid) > 500 else 1
-            sampled = valid[::sample_rate]
-            
-            imageio.mimsave(
-                str(path), 
-                [f.astype(np.uint8) for f in sampled], 
-                fps=fps//sample_rate
-            )
-            print(f"  ✅ GIF via imageio: {path.name} ({len(sampled)} frames)")
-            
-            del sampled
-            gc.collect()
-            return True
-            
-        except Exception as e2:
-            print(f"  ❌ imageio also failed: {e2}")
-            return False
+        print(f"  ⚠️  GIF creation failed: {e}")
+        return False
 
 
 def save_summary_plot(
@@ -542,11 +538,12 @@ def run_episode(
     from env_setup.sar_pettingzoo_env import SARPettingZooEnv
     import gc  # ← THÊM import
 
-    # ═══════════════════════════════════════════════════════════════
-    # 🔥 FIX: GIẢM SỐ FRAMES CHO 3D MODE
-    # ═══════════════════════════════════════════════════════════════
-    FRAME_SKIP = 15 if config.viz_mode == "3d" else 5  # Chỉ lưu mỗi 15 frames cho 3D
-    # ═══════════════════════════════════════════════════════════════
+
+    # 🔥 FIX: GIẢM FRAME_SKIP ĐỂ MƯỢT HƠN
+    FRAME_SKIP = 3 if config.viz_mode == "3d" else 2
+    # Transfer: 3200 steps → 3200/6 = 533 frames
+    # Extreme:  4000 steps → 4000/6 = 666 frames
+# ═══════════════════════════════════════════════════════════════    # ═══════════════════════════════════════════════════════════════
 
     env      = SARPettingZooEnv(config, render_mode="rgb_array")
     n_agents = config.env.n_uav
