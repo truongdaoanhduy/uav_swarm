@@ -29,6 +29,8 @@ import numpy as np
 # JSON HELPER
 # ══════════════════════════════════════════════════════════════════════════════
 
+# eval_and_upload.py - THÊM vào đầu file nếu chưa có
+
 def _json_safe(obj):
     """JSON serializer cho numpy types."""
     if isinstance(obj, np.integer):
@@ -37,10 +39,13 @@ def _json_safe(obj):
         return float(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
-    if isinstance(obj, bool):
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, bool):  # ← THÊM: Handle bool TRƯỚC int
         return bool(obj)
-    return str(obj)
-
+    return obj
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HUGGINGFACE UPLOADER
@@ -105,6 +110,8 @@ class EvalHFUploader:
             print(f"  ❌ Upload failed {repo_path}: {e}")
             return False
 
+    # eval_and_upload.py - THAY THẾ hàm upload_stage_results()
+
     def upload_stage_results(
         self,
         stage:        str,
@@ -119,21 +126,31 @@ class EvalHFUploader:
         for algo, result in algo_results.items():
             local_path = stage_dir / f"{algo}_{stage}.json"
             
-            result_dict = (
-                asdict(result)
-                if hasattr(result, "__dataclass_fields__")
-                else result
-            )
+            # ✅ FIX: Serialize AlgoResult → dict với FULL ARRAYS
+            if hasattr(result, "__dataclass_fields__"):
+                result_dict = asdict(result)
+            else:
+                result_dict = result
+            
+            # ✅ THÊM: Ensure arrays được lưu
+            result_dict["full_data"] = {
+                "ep_rewards":     result.rewards,      # ← List[float]
+                "ep_coverages":   result.coverages,    # ← List[float]
+                "ep_victim_rates": result.victim_rates, # ← List[float]
+                "ep_successes":   result.successes,    # ← List[bool]
+                "n_episodes":     len(result.rewards),
+            }
             
             with open(local_path, "w") as f:
                 json.dump(result_dict, f, indent=2, default=_json_safe)
             
+            # Upload lên HF
             self.upload_file(
                 str(local_path),
                 f"eval_results/{stage}/{algo}_results.json",
-                f"Eval {algo.upper()} on {stage}",
+                f"Eval {algo.upper()} on {stage} - Full episode data",
             )
-
+        
         # Upload comparison
         if comparison:
             comp_path = stage_dir / f"comparison_{stage}.json"
@@ -147,6 +164,8 @@ class EvalHFUploader:
                 f"Statistical comparison {stage}",
             )
 
+    # eval_and_upload.py - THAY THẾ phần tạo summary["stages"][stage][algo]
+
     def upload_summary(
         self,
         all_stage_results: Dict,
@@ -155,7 +174,7 @@ class EvalHFUploader:
         """
         Tổng hợp EXTREME + TRANSFER → summary.json → upload.
         
-        NOTE: Không có HARD stage (đã dùng để train).
+        ✅ FIX: Lưu CẢ arrays và summary stats (giống MASAC trainer)
         """
         print(f"\n  📊 Creating summary (EXTREME + TRANSFER)...")
         
@@ -173,7 +192,9 @@ class EvalHFUploader:
             
             for algo, r in algo_results.items():
                 if hasattr(r, "reward_mean"):
+                    # ✅ FIX: Lưu VỪA summary VỪA full arrays
                     summary["stages"][stage][algo] = {
+                        # Summary stats (cho quick view)
                         "reward_mean":      float(r.reward_mean),
                         "reward_std":       float(r.reward_std),
                         "reward_median":    float(r.reward_median),
@@ -184,7 +205,16 @@ class EvalHFUploader:
                         "success_rate":     float(r.success_rate),
                         "n_episodes":       int(r.n_episodes),
                         "checkpoint":       str(r.checkpoint),
+                        
+                        # ✅ THÊM: Full episode arrays (giống MASAC trainer)
+                        "full_data": {
+                            "ep_rewards":      [float(x) for x in r.rewards],
+                            "ep_coverages":    [float(x) for x in r.coverages],
+                            "ep_victim_rates": [float(x) for x in r.victim_rates],
+                            "ep_successes":    [bool(x) for x in r.successes],
+                        }
                     }
+
 
             # Rankings per stage
             if algo_results:
