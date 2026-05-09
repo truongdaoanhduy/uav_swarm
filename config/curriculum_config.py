@@ -112,7 +112,7 @@ STAGE_EXTREME = StageConfig(
     station_capacity=1,
 
     # ══ TIME: 4000/122500 = 0.0033 steps/m² (hardest) ═════
-    max_steps=200,
+    max_steps=4000,
 
     min_episodes=500,
     advance_coverage=0.55,
@@ -132,7 +132,7 @@ STAGE_TRANSFER = StageConfig(
     n_debris=54,
     n_danger_total=12,
     station_capacity=1,
-    max_steps=200,
+    max_steps=3200,
     min_episodes=0,       # Eval only, không train
     advance_coverage=0.0,
     advance_victims=0.0,
