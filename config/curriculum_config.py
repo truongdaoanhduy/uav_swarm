@@ -147,27 +147,27 @@ STAGE_TRANSFER = StageConfig(
 # VERIFICATION
 # ══════════════════════════════════════════════════════════════════════
 
-def _verify_stages() -> None:
-    """
-    Verify density consistency cho các stage được dùng.
+# def _verify_stages() -> None:
+#     """
+#     Verify density consistency cho các stage được dùng.
     
-    NOTE: Chỉ verify STAGE_HARD và STAGE_EXTREME.
-    STAGE_TRANSFER là eval-only, không cần verify chặt.
-    """
-    stages_to_verify = [STAGE_HARD, STAGE_EXTREME]
+#     NOTE: Chỉ verify STAGE_HARD và STAGE_EXTREME.
+#     STAGE_TRANSFER là eval-only, không cần verify chặt.
+#     """
+#     stages_to_verify = [STAGE_HARD, STAGE_EXTREME]
 
-    for stage in stages_to_verify:
-        vd = stage.victim_density_per_1000m2
-        od = stage.obstacle_density_per_1000m2
+#     for stage in stages_to_verify:
+#         vd = stage.victim_density_per_1000m2
+#         od = stage.obstacle_density_per_1000m2
 
         
 
-    print(
-        f"✅ Stage verification passed:\n"
-        f"   HARD:    {STAGE_HARD.describe()}\n"
-        f"   EXTREME: {STAGE_EXTREME.describe()}\n"
-        f"   TRANSFER:{STAGE_TRANSFER.describe()}"
-    )
+#     print(
+#         f"✅ Stage verification passed:\n"
+#         f"   HARD:    {STAGE_HARD.describe()}\n"
+#         f"   EXTREME: {STAGE_EXTREME.describe()}\n"
+#         f"   TRANSFER:{STAGE_TRANSFER.describe()}"
+#     )
 
 
-_verify_stages()
+# _verify_stages()
