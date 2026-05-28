@@ -16,6 +16,6 @@ except ImportError:
 
 __all__ = [
     "BaselineReward",
-    "LLMReward",
-    "LLM_REWARD_AVAILABLE",
+    "LLMReward",           # ← THÊM
+    "load_llm_reward",     # ← THÊM
 ]

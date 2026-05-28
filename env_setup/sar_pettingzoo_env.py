@@ -81,7 +81,8 @@ class SARPettingZooEnv(ParallelEnv):
         render_mode: str | None = None,
         n_victims: int | None = None,
         verbose: int = 0,
-        viz_mode:  str = "2d"
+        viz_mode:  str = "2d",
+        reward_override = None,  # ← THÊM
     ):
         """
         Initialize PettingZoo environment.
@@ -119,6 +120,10 @@ class SARPettingZooEnv(ParallelEnv):
         # Action/Observation spaces (per agent)
         actor_dim = self.cfg.obs.actor_dim  # 68 with n_stations=2
         
+        if reward_override is not None:
+            self._base_env.baseline_reward = reward_override  # ← SỬA
+            print("[PettingZoo] Using reward_override")
+
         self._observation_spaces = {
             agent: spaces.Box(
                 low=-np.inf,
