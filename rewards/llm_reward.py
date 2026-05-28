@@ -63,6 +63,67 @@ class LLMReward:
         return {"total": reward}
 
     # ── Chuyển objects → list số ─────────────────────────────
+    # rewards/llm_reward.py — thêm vào class LLMReward
+
+    def compute(
+        self,
+        uavs,
+        victims,
+        obstacles,
+        coverage_map,
+        fleet_manager,
+        newly_found,
+        prev_coverage,
+        current_step,
+        done,
+        stations=None,
+    ) -> dict:
+        """
+        Global reward cho logging.
+        base_env.step() gọi cái này để accumulate episode reward.
+        """
+        if not uavs:
+            return {"total": 0.0}
+
+        total = 0.0
+        n_counted = 0
+
+        for uav in uavs:
+            if uav.state == UAVState.DISABLED:
+                continue
+
+            newly_found_by_uav = [
+                v for v in newly_found if v.found_by_uav == uav.id
+            ]
+
+            breakdown = self.compute_per_uav(
+                uav                = uav,
+                newly_found_by_uav = newly_found_by_uav,
+                uavs               = uavs,
+                victims            = victims,
+                obstacles          = obstacles,
+                coverage_map       = coverage_map,
+                fleet_manager      = fleet_manager,
+                prev_coverage      = prev_coverage,
+                current_step       = current_step,
+                done               = done,
+                stations           = stations,
+            )
+            total += breakdown["total"]
+            n_counted += 1
+
+        mean_reward = total / max(n_counted, 1)
+
+        return {
+            "total":   mean_reward,
+            "n_uavs":  n_counted,
+        }
+
+    def summarize(self, breakdown: dict) -> str:
+        """Log summary."""
+        return f"llm_total={breakdown.get('total', 0):.2f}"
+
+
     def _build_factors(
         self,
         uav,

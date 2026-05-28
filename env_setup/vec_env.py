@@ -8,11 +8,14 @@ import numpy as np
 from typing import List, Tuple, Dict
 
 
-def env_worker(pipe, config_dict, seed):
+# env_setup/vec_env.py
+
+def env_worker(pipe, config_dict, seed, llm_reward_path=None):
     """
     Worker process với seed progression.
     
     FIXED: Mỗi episode dùng seed khác nhau
+    ✅ FIX: Load LLM reward TRƯỚC initial reset
     """
     try:
         from env_setup.sar_pettingzoo_env import SARPettingZooEnv
@@ -23,9 +26,26 @@ def env_worker(pipe, config_dict, seed):
         obs_dim = config.obs.actor_dim
         global_obs_dim = config.obs.critic_dim
         
+        # ✅ Tạo env 1 LẦN DUY NHẤT
         env = SARPettingZooEnv(config, render_mode=None)
         
-        # Cache
+        # ✅ Load LLM reward TRƯỚC khi reset
+        if llm_reward_path is not None:
+            try:
+                import sys, os
+                sys.path.insert(0, os.getcwd())
+                from rewards.llm_reward import load_llm_reward
+                
+                llm_reward = load_llm_reward(llm_reward_path, config)
+                env._base_env.baseline_reward = llm_reward
+                
+                print(f"[Worker pid={os.getpid()}] ✅ LLM reward injected BEFORE reset")
+            except Exception as e:
+                print(f"[Worker pid={os.getpid()}] ⚠️  LLM inject failed: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # ✅ Cache (KHÔNG tạo env lại)
         last_obs_array = np.zeros((n_agents, obs_dim), dtype=np.float32)
         last_global_obs = np.zeros(global_obs_dim, dtype=np.float32)
         last_info = {
@@ -53,11 +73,11 @@ def env_worker(pipe, config_dict, seed):
             }
         }
         
-        # ✅ FIX: Episode counter + RNG cho seed progression
+        # ✅ Episode counter + RNG
         episode_count = 0
-        rng = np.random.default_rng(seed)  # ← RNG riêng cho worker
+        rng = np.random.default_rng(seed)
         
-        # Initial reset với seed gốc
+        # ✅ Initial reset (SAU khi inject LLM)
         current_seed = seed
         obs, info = env.reset(seed=current_seed)
         episode_count += 1
@@ -69,11 +89,11 @@ def env_worker(pipe, config_dict, seed):
             last_global_obs = info['uav_0']['global_obs'].copy()
             last_info = info
         
+        # ✅ Worker loop (giữ nguyên)
         while True:
             cmd, data = pipe.recv()
             
             if cmd == "reset":
-                # ✅ FIX: Generate seed mới cho mỗi episode
                 current_seed = int(rng.integers(0, 2**31))
                 obs, info = env.reset(seed=current_seed)
                 episode_count += 1
@@ -94,7 +114,7 @@ def env_worker(pipe, config_dict, seed):
                 ))
                 
             elif cmd == "step":
-                actions = data  # [n_agents, 4]
+                actions = data
                 actions_dict = {
                     f"uav_{i}": actions[i] for i in range(n_agents)
                 }
@@ -102,7 +122,6 @@ def env_worker(pipe, config_dict, seed):
                 obs, rewards, terms, truncs, info = env.step(actions_dict)
                 done = any(terms.values()) or any(truncs.values())
 
-                # Update cache nếu obs hợp lệ
                 if obs and len(obs) > 0:
                     obs_arrays = []
                     for i in range(n_agents):
@@ -121,7 +140,6 @@ def env_worker(pipe, config_dict, seed):
                     last_global_obs = info['uav_0']['global_obs'].copy()
                     last_info = info
                 
-                # Extract rewards
                 rewards_array = np.zeros(n_agents, dtype=np.float32)
                 if rewards:
                     for i in range(n_agents):
@@ -129,7 +147,6 @@ def env_worker(pipe, config_dict, seed):
                         if aid in rewards:
                             rewards_array[i] = rewards[aid]
                 
-                # Send kết quả TRƯỚC khi reset
                 pipe.send((
                     last_obs_array.copy(),
                     last_global_obs.copy(),
@@ -138,7 +155,6 @@ def env_worker(pipe, config_dict, seed):
                     last_info
                 ))
                 
-                # ✅ Reset sau done — base_env KHÔNG tự reset nữa nên chỉ reset 1 lần
                 if done:
                     current_seed = int(rng.integers(0, 2**31))
                     obs_new, info_new = env.reset(seed=current_seed)
@@ -178,10 +194,18 @@ def env_worker(pipe, config_dict, seed):
 
 from numpy.random import SeedSequence
 
+# env_setup/vec_env.py
+
 class VectorizedEnv:
     """Vectorized environment với seed progression fix."""
     
-    def __init__(self, config, n_envs: int = 8, start_seed: int = 0):
+    def __init__(
+        self,
+        config,
+        n_envs: int = 8,
+        start_seed: int = 0,
+        llm_reward_path: str = None,   # ← THÊM PARAM
+    ):
         self.n_envs = n_envs
         self.n_agents = config.env.n_uav
         self.obs_dim = config.obs.actor_dim
@@ -203,9 +227,10 @@ class VectorizedEnv:
         for i in range(n_envs):
             parent_pipe, child_pipe = ctx.Pipe()
             p = ctx.Process(
-                target=env_worker,
-                args=(child_pipe, config, worker_seeds[i]),  # ← Dùng worker_seeds
-                daemon=True
+                target = env_worker,
+                args   = (child_pipe, config, worker_seeds[i]),
+                kwargs = {"llm_reward_path": llm_reward_path},   # ← TRUYỀN
+                daemon = True
             )
 
             p.start()
