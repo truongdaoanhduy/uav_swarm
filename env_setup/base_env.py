@@ -93,7 +93,7 @@ class SARBaseEnv(gym.Env):
 
         self._map_gen   = MapGenerator(self.cfg)
         self._reward_fn = BaselineReward(self.cfg)
-
+        self.baseline_reward = None
         if backend == "logic":
             from env_setup.backends.logic_backend import LogicBackend
             self.backend = LogicBackend(self.cfg)
@@ -138,7 +138,7 @@ class SARBaseEnv(gym.Env):
         self._episode_reward_sum  = 0.0
         self._step_rewards_history = []
 
-        self._reward_fn.reset()
+        self._active_reward_fn.reset()
 
         map_data = self._map_gen.generate(
             n_victims_override=self._n_victims_ov,
@@ -273,6 +273,8 @@ class SARBaseEnv(gym.Env):
         is_terminal = done or truncated
 
         # ✅ 7. Per-agent rewards
+        reward_fn = self._active_reward_fn   # ← THÊM DÒNG NÀY
+
         rewards_dict: dict[int, float] = {}
         for uav in uavs:
             if uav.state == UAVState.DISABLED:
@@ -283,7 +285,7 @@ class SARBaseEnv(gym.Env):
                 v for v in newly_found if v.found_by_uav == uav.id
             ]
 
-            breakdown = self._reward_fn.compute_per_uav(
+            breakdown = reward_fn.compute_per_uav(   # ← THAY self._reward_fn
                 uav                = uav,
                 newly_found_by_uav = newly_found_by_uav,
                 uavs               = uavs,
@@ -299,7 +301,7 @@ class SARBaseEnv(gym.Env):
             rewards_dict[uav.id] = breakdown["total"]
 
         # ✅ 8. Global reward
-        global_reward = self._reward_fn.compute(
+        global_reward = reward_fn.compute(   # ← THAY self._reward_fn
             uavs          = uavs,
             victims       = victims,
             obstacles     = obstacles,
@@ -311,6 +313,13 @@ class SARBaseEnv(gym.Env):
             done          = is_terminal,
             stations      = stations,
         )
+
+        if self._step_count == 1:  # Step đầu tiên của episode
+            reward_type = (
+                "LLM" if self.baseline_reward is not None 
+                else "Baseline v4.0"
+            )
+            print(f"[Ep {self._episode_id}] Using reward: {reward_type}")
 
         # ✅ 9. Accumulate episode reward
         self._episode_reward_sum += global_reward["total"]
@@ -464,6 +473,11 @@ class SARBaseEnv(gym.Env):
     def coverage_rate(self) -> float:
         return self.backend.get_state()["coverage_map"].get_coverage_rate()
 
+    @property
+    def _active_reward_fn(self):
+        """Return LLM reward nếu có, ngược lại Baseline."""
+        return self.baseline_reward if self.baseline_reward is not None else self._reward_fn
+
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _build_obs_dict(
@@ -590,8 +604,9 @@ class SARBaseEnv(gym.Env):
             1 for u in uavs for obs in obstacles
             if isinstance(obs, DangerZone) and obs.is_inside(u.pos)
         )
-        n_collisions   = len(getattr(self._reward_fn, "_collision_penalized",     set()))
-        n_dead_battery = len(getattr(self._reward_fn, "_battery_death_penalized", set()))
+        _rfn = self._active_reward_fn
+        n_collisions   = len(getattr(_rfn, "_collision_penalized",     set()))
+        n_dead_battery = len(getattr(_rfn, "_battery_death_penalized", set()))
 
         emergency_pct = getattr(
             self.cfg.uav, "battery_emergency_pct",

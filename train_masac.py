@@ -28,21 +28,21 @@ def set_seed(seed: int):
 def parse_args():
     parser = argparse.ArgumentParser(description="MASAC Training")
 
-    parser.add_argument("--total-episodes", type=int, default=3000)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--n-envs", type=int, default=1)
-    parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--log-interval", type=int, default=50)
-    parser.add_argument("--checkpoint-interval", type=int, default=100)
-    parser.add_argument("--hf-token", type=str, default=None)
-    parser.add_argument("--hf-upload", action="store_true")
-    parser.add_argument("--hf-upload-every", type=int, default=100)
-    
-    # ← LLM reward support
-    parser.add_argument("--llm-reward", type=str, default=None,
-                        help="Path to LLM reward file")
+    parser.add_argument("--total-episodes",      type=int,   default=3000)
+    parser.add_argument("--seed",                type=int,   default=42)
+    parser.add_argument("--device",              type=str,   default="auto")
+    parser.add_argument("--run-name",            type=str,   default=None)
+    parser.add_argument("--n-envs",              type=int,   default=1)
+    parser.add_argument("--max-steps",           type=int,   default=None)
+    parser.add_argument("--log-interval",        type=int,   default=50)
+    parser.add_argument("--checkpoint-interval", type=int,   default=100)
+    parser.add_argument("--hf-token",            type=str,   default=None)
+    parser.add_argument("--hf-upload",           action="store_true")
+    parser.add_argument("--hf-upload-every",     type=int,   default=100)
+    parser.add_argument(
+        "--llm-reward", type=str, default=None,
+        help="Path to LLM reward file (e.g., llm_reward_generated.py)"
+    )
 
     return parser.parse_args()
 
@@ -51,8 +51,13 @@ def main():
     args = parse_args()
     set_seed(args.seed)
 
-    device = "cuda" if (args.device == "auto" and torch.cuda.is_available()) else args.device
+    # ── Device ───────────────────────────────────────────────────────────────
+    if args.device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = args.device
 
+    # ── Config ───────────────────────────────────────────────────────────────
     cfg = AppConfig()
     cfg.apply_stage(STAGE_HARD)
     cfg.env.n_uav = 4
@@ -60,33 +65,30 @@ def main():
     if args.max_steps:
         cfg.env.max_steps = args.max_steps
 
-    # ─────────────────────────────────────────────────────────
-    # ← LOAD LLM REWARD
-    # ─────────────────────────────────────────────────────────
-    llm_reward = None
-    if args.llm_reward:
-        from rewards.llm_reward import load_llm_reward
-        llm_reward = load_llm_reward(args.llm_reward, cfg)
+    # ── Run name + HF ────────────────────────────────────────────────────────
+    # ✅ Định nghĩa TRƯỚC khi dùng
+    run_name = args.run_name or f"masac_s{args.seed}"
+    HF_TOKEN = args.hf_token or os.getenv("HF_TOKEN")
+    HF_REPO  = "duy95/sar-uav-results"
+
+    # ── LLM Reward ───────────────────────────────────────────────────────────
+    # ✅ Chỉ giữ PATH — object load bên trong worker (safe với spawn)
+    llm_reward_path = args.llm_reward
+
+    if llm_reward_path:
         print(f"\n{'='*70}")
-        print(f"🤖 LLM REWARD LOADED")
-        print(f"   File: {args.llm_reward}")
+        print(f"🤖 LLM REWARD: {llm_reward_path}")
         print(f"{'='*70}\n")
     else:
         print(f"\n{'='*70}")
         print(f"📊 BASELINE REWARD v4.0")
         print(f"{'='*70}\n")
 
-    # ─────────────────────────────────────────────────────────
-    # ← PRINT CONFIG
-    # ─────────────────────────────────────────────────────────
-    HF_TOKEN = args.hf_token or os.getenv("HF_TOKEN")
-    HF_REPO = "duy95/sar-uav-results"
-    run_name = args.run_name or f"masac_s{args.seed}"
-
+    # ── Print config ─────────────────────────────────────────────────────────
     tr = cfg.train
     print(f"{'='*70}")
     print(f"🔥 MASAC TRAINING — HARD STAGE")
-    print(f"   Reward: {'LLM' if llm_reward else 'Baseline v4.0'}")
+    print(f"   Reward: {'LLM' if llm_reward_path else 'Baseline v4.0'}")
     print(f"{'='*70}")
     print(f"ENVIRONMENT:")
     print(f"  Map       : {cfg.env.map_size}×{cfg.env.map_size}m")
@@ -116,61 +118,29 @@ def main():
         print(f"  hf_upload_every: {args.hf_upload_every} eps")
     print(f"{'='*70}\n")
 
-    # ─────────────────────────────────────────────────────────
-    # ← CREATE TRAINER
-    # ─────────────────────────────────────────────────────────
+    # ── Create Trainer ───────────────────────────────────────────────────────
+    # ✅ Tạo 1 lần, truyền llm_reward_path
     trainer = MASACTrainer(
-        config=cfg,
-        device=device,
-        run_name=run_name,
-        n_envs=args.n_envs,
-        hf_token=HF_TOKEN if args.hf_upload else None,
-        hf_repo=HF_REPO if args.hf_upload else None,
-        hf_upload_every=args.hf_upload_every,
+        config          = cfg,
+        device          = device,
+        run_name        = run_name,
+        n_envs          = args.n_envs,
+        llm_reward_path = llm_reward_path,                      # ← PATH
+        hf_token        = HF_TOKEN if args.hf_upload else None,
+        hf_repo         = HF_REPO  if args.hf_upload else None,
+        hf_upload_every = args.hf_upload_every,
     )
 
-    # ─────────────────────────────────────────────────────────
-    # ← PATCH LLM REWARD
-    # ─────────────────────────────────────────────────────────
-    if llm_reward:
-        import training.algorithms.masac.trainer as tm
-        
-        # MASAC có thể dùng _EnvWrapper hoặc tên khác, check module
-        if hasattr(tm, '_EnvWrapper'):
-            _orig = tm._EnvWrapper.__init__
-            
-            def patched(self, config, n_envs, seed):
-                _orig(self, config, n_envs, seed)
-                
-                if hasattr(self, '_env') and not self._is_vec:
-                    if hasattr(self._env, '_base_env'):
-                        self._env._base_env.baseline_reward = llm_reward
-                        print(f"\n{'='*70}")
-                        print(f"✅ LLM REWARD INJECTED INTO ENV")
-                        print(f"{'='*70}\n")
-                    else:
-                        print(f"\n⚠️  Cannot inject: no _base_env\n")
-                elif self._is_vec:
-                    print(f"\n⚠️  Vectorized env - LLM reward not supported\n")
-            
-            tm._EnvWrapper.__init__ = patched
-        else:
-            print(f"\n⚠️  MASAC trainer không dùng _EnvWrapper, LLM reward chưa hỗ trợ\n")
-
-    # ─────────────────────────────────────────────────────────
-    # ← TRAIN
-    # ─────────────────────────────────────────────────────────
+    # ── Train ────────────────────────────────────────────────────────────────
     trainer.train(
-        total_episodes=args.total_episodes,
-        curriculum_manager=None,
-        seed=args.seed,
-        log_every_n_eps=args.log_interval,
-        checkpoint_every_n_eps=args.checkpoint_interval,
+        total_episodes         = args.total_episodes,
+        curriculum_manager     = None,
+        seed                   = args.seed,
+        log_every_n_eps        = args.log_interval,
+        checkpoint_every_n_eps = args.checkpoint_interval,
     )
 
-    # ─────────────────────────────────────────────────────────
-    # ← SUMMARY
-    # ─────────────────────────────────────────────────────────
+    # ── Summary ──────────────────────────────────────────────────────────────
     print(f"\n{'='*70}")
     print(f"✅ MASAC TRAINING COMPLETE")
     print(f"{'='*70}")

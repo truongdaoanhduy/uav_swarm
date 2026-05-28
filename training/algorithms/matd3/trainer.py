@@ -48,8 +48,16 @@ from .replay_buffer import ReplayBuffer
 # ENV WRAPPER
 # ══════════════════════════════════════════════════════════════════════════════
 
+# training/algorithms/matd3/trainer.py
+
 class _EnvWrapper:
-    def __init__(self, config: AppConfig, n_envs: int, seed: int):
+    def __init__(
+        self,
+        config: AppConfig,
+        n_envs: int,
+        seed: int,
+        llm_reward_path: str = None,   # ← THÊM
+    ):
         self.n_envs   = n_envs
         self.n_agents = config.env.n_uav
         self.obs_dim  = config.obs.actor_dim
@@ -58,13 +66,30 @@ class _EnvWrapper:
         if n_envs == 1:
             self._env    = SARPettingZooEnv(config, render_mode=None)
             self._is_vec = False
+
+            # ✅ Inject LLM reward cho single env
+            if llm_reward_path is not None:
+                try:
+                    import sys, os
+                    sys.path.insert(0, os.getcwd())
+                    from rewards.llm_reward import load_llm_reward
+                    llm_rw = load_llm_reward(llm_reward_path, config)
+                    self._env._base_env.baseline_reward = llm_rw
+                    print(f"\n✅ LLM reward injected (MATD3 single env)\n")
+                except Exception as e:
+                    print(f"\n⚠️  LLM inject failed: {e}\n")
         else:
-            self._env    = VectorizedEnv(config, n_envs=n_envs, start_seed=seed)
+            self._env = VectorizedEnv(
+                config,
+                n_envs          = n_envs,
+                start_seed      = seed,
+                llm_reward_path = llm_reward_path,   # ← TRUYỀN
+            )
             self._is_vec = True
 
-        self._current_obs:    np.ndarray | None = None
-        self._current_global: np.ndarray | None = None
-        self._needs_reset:    bool = True
+        self._current_obs    = None
+        self._current_global = None
+        self._needs_reset    = True
 
     def reset(self) -> Tuple[np.ndarray, np.ndarray]:
         if self._is_vec:
@@ -150,6 +175,8 @@ class MATD3Trainer:
         hf_token:        str = None,
         hf_repo:         str = None,
         hf_upload_every: int = 500,
+        llm_reward_path: str = None,   # ← THÊM
+
     ):
         # ── 1. Basic attrs TRƯỚC ──────────────────────────────────────────
         self.config   = config
@@ -180,6 +207,7 @@ class MATD3Trainer:
         self.update_every     = tr.matd3_update_every
         self.updates_per_step = tr.matd3_updates_per_step
         self.warmup_steps     = tr.matd3_warmup_steps
+        self._llm_reward_path = llm_reward_path   # ← LƯU LẠI
 
         # ── 4. Networks ───────────────────────────────────────────────────
         self.actor = TD3ActorNetwork(
@@ -279,8 +307,12 @@ class MATD3Trainer:
         checkpoint_every_n_eps: int       = 100,
     ):
         start_time = time.time()
-        env        = _EnvWrapper(self.config, self.n_envs, seed)
-
+        env = _EnvWrapper(
+                self.config,
+                self.n_envs,
+                seed,
+                llm_reward_path=self._llm_reward_path   # ← THÊM
+            )
         self._next_log_ep        = log_every_n_eps
         self._next_checkpoint_ep = checkpoint_every_n_eps
 

@@ -51,19 +51,39 @@ from .replay_buffer import ReplayBuffer
 class _EnvWrapper:
     """Unified env interface — same as MAPPO."""
 
-    def __init__(self, config: AppConfig, n_envs: int, seed: int):
+    def __init__(self, config: AppConfig, n_envs: int, seed: int,llm_reward_path: str = None,   # ← THÊM
+):
         self.n_envs   = n_envs
         self.n_agents = config.env.n_uav
         self.obs_dim  = config.obs.actor_dim
         self._config  = config
         self._seed    = seed
 
+        # ✅ Inject LLM reward cho single env
         if n_envs == 1:
             self._env    = SARPettingZooEnv(config, render_mode=None)
             self._is_vec = False
+
+            # ✅ Inject LLM reward cho single env
+            if llm_reward_path is not None:
+                try:
+                    import sys, os
+                    sys.path.insert(0, os.getcwd())
+                    from rewards.llm_reward import load_llm_reward
+                    llm_rw = load_llm_reward(llm_reward_path, config)
+                    self._env._base_env.baseline_reward = llm_rw
+                    print(f"\n✅ LLM reward injected (MASAC single env)\n")
+                except Exception as e:
+                    print(f"\n⚠️  LLM inject failed: {e}\n")
         else:
-            self._env    = VectorizedEnv(config, n_envs=n_envs, start_seed=seed)
+            self._env = VectorizedEnv(
+                config,
+                n_envs          = n_envs,
+                start_seed      = seed,
+                llm_reward_path = llm_reward_path,   # ← TRUYỀN
+            )
             self._is_vec = True
+
 
         self._current_obs:    np.ndarray | None = None
         self._current_global: np.ndarray | None = None
@@ -160,6 +180,8 @@ class MASACTrainer:
         hf_token:        str = None,
         hf_repo:         str = None,
         hf_upload_every: int = 500,
+        llm_reward_path: str = None,   # ← THÊM
+
     ):
         # ── 1. Lưu config + basic attrs TRƯỚC ────────────────────────────
         self.config   = config
@@ -206,6 +228,7 @@ class MASACTrainer:
             hidden_dims    = tr.masac_critic_hidden,
         ).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
+        self._llm_reward_path = llm_reward_path  
 
         for p in self.critic_target.parameters():
             p.requires_grad = False
@@ -292,8 +315,12 @@ class MASACTrainer:
         checkpoint_every_n_eps: int       = 100,
     ):
         start_time = time.time()
-        env        = _EnvWrapper(self.config, self.n_envs, seed)
-
+        env = _EnvWrapper(
+                self.config,
+                self.n_envs,
+                seed,
+                llm_reward_path=self._llm_reward_path   # ← THÊM
+            )
         self._next_log_ep        = log_every_n_eps
         self._next_checkpoint_ep = checkpoint_every_n_eps
 
