@@ -12,7 +12,7 @@ build/
 venv/
 env/
 .env
-
+*.json
 # Results (quá nặng, không push)
 results/
 # *.pt
