@@ -8,7 +8,6 @@ def reward_func(factors):
     # Victims reward scaled by urgency and episode progress
     victim_weight = 1 + factors[10]
     reward += factors[3] * factors[4] * 2.0 * victim_weight
-    print('reward llm')
     # Battery penalties
     if factors[8] == 1:  # Battery died
         reward -= 100.0
