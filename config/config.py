@@ -60,83 +60,47 @@ class AppConfig:
     # ── Curriculum integration ────────────────────────────────────────────────
 
     def apply_stage(self, stage) -> None:
-        """
-        Apply curriculum stage config vào AppConfig (in-place).
-
-        Đây là single point of truth cho stage → config mapping.
-        CurriculumManager.apply_to_config() gọi method này.
-
-        Args:
-            stage: StageConfig object
-
-        Example:
-            cfg = AppConfig()
-            cfg.apply_stage(STAGE_MEDIUM)
-        """
-        # ── Map ───────────────────────────────────────────────────────────────
-        self.env.map_size  = stage.map_size
-        self.env.grid_size = stage.map_size   # 1 cell = 1m, luôn sync
-
-        # ── Fleet ─────────────────────────────────────────────────────────────
+        self.env.map_size         = stage.map_size
+        self.env.grid_size        = stage.map_size
         self.env.n_uav            = stage.n_uav
         self.env.max_steps        = stage.max_steps
         self.env.station_capacity = stage.station_capacity
-
-        # ── Victims ───────────────────────────────────────────────────────────
         self.victim.n_victims_min = stage.n_victims_min
         self.victim.n_victims_max = stage.n_victims_max
-
-        # ── Obstacles ─────────────────────────────────────────────────────────
         self.obstacle.n_debris       = stage.n_debris
         self.obstacle.n_danger_total = stage.n_danger_total
-
-        # ── Re-sync sau khi thay đổi ──────────────────────────────────────────
         self.__post_init__()
-
-    # ── Properties ───────────────────────────────────────────────────────────
 
     @property
     def map_diagonal(self) -> float:
-        """Diagonal của map (meters)."""
         return float(np.sqrt(2) * self.env.map_size)
 
     @property
     def grid_cell_size(self) -> float:
-        """Size của mỗi grid cell (meters)."""
         return self.env.map_size / self.env.grid_size
 
-    # ── Serialization ─────────────────────────────────────────────────────────
-
     def save(self, path: str) -> None:
-        """Save config to JSON file."""
         data = asdict(self)
-        # Handle np.inf → "inf" cho JSON serialization
         data["danger"]["heights"]["radiation"] = "inf"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
     @classmethod
     def load(cls, path: str) -> "AppConfig":
-        """Load config from JSON file."""
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-
-        # Restore np.inf
         if data["danger"]["heights"].get("radiation") == "inf":
             data["danger"]["heights"]["radiation"] = np.inf
-
-        # ObsSchema không serialize (computed, không phải data)
         obs_data = data["obs"].copy()
         obs_data.pop("schema", None)
-
         return cls(
-            env=EnvConfig(**data["env"]),
-            uav=UAVConfig(**data["uav"]),
-            sensor=SensorConfig(**data["sensor"]),
-            victim=VictimConfig(**data["victim"]),
-            obstacle=ObstacleConfig(**data["obstacle"]),
-            danger=DangerZoneConfig(**data["danger"]),
-            reward=RewardConfig(**data["reward"]),
-            obs=ObsConfig(**obs_data),
-            train=TrainConfig(**data["train"]),
+            env      = EnvConfig(**data["env"]),
+            uav      = UAVConfig(**data["uav"]),
+            sensor   = SensorConfig(**data["sensor"]),
+            victim   = VictimConfig(**data["victim"]),
+            obstacle = ObstacleConfig(**data["obstacle"]),
+            danger   = DangerZoneConfig(**data["danger"]),
+            reward   = RewardConfig(**data["reward"]),
+            obs      = ObsConfig(**obs_data),
+            train    = TrainConfig(**data["train"]),
         )

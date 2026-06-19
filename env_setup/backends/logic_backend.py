@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-
+import random  # ✅ THÊM import
 import numpy as np
 
 # ✅ FIX 4.1: REMOVED sys.path hack
@@ -73,25 +73,34 @@ class LogicBackend(BaseBackend):
     # RESET
     # ══════════════════════════════════════════════════════════════════════
 
+
     def reset(self, map_data: dict[str, Any]) -> None:
-        # ✅ FIX 4.3: Deterministic eval mode
-        if self.cfg.env.deterministic_eval:
-            np.random.seed(self.cfg.env.eval_seed)
-            logger.debug(
-                "LogicBackend: deterministic_eval=True, seed=%d",
-                self.cfg.env.eval_seed,
-            )
+        """Reset với deterministic seed từ map_data."""
 
-        # ✅ NEW: Set FOVSensor RNG seed cho reproducible detection
+        # ✅ FIX: Lấy episode seed từ map_data (do MapGenerator tạo)
+        # map_data["seed"] = seed đã được base_env truyền vào generate()
+        episode_seed = map_data.get("seed", None)
+
         if self.cfg.env.deterministic_eval:
-            self._fov_sensor.set_seed(self.cfg.env.eval_seed)
+            # Eval mode: seed cố định
+            fixed_seed = self.cfg.env.eval_seed
+            np.random.seed(fixed_seed)
+            random.seed(fixed_seed)          # ✅ THÊM: python random
+            self._fov_sensor.set_seed(fixed_seed)
+
         else:
-            # Random seed mỗi episode → stochastic training
-            self._fov_sensor.set_seed(
-                int(np.random.randint(0, 2**31))
-            )
+            # Training mode: dùng episode_seed (từ map_data)
+            if episode_seed is not None:
+                # ✅ FIX: Set numpy + python random theo episode seed
+                np.random.seed(episode_seed % (2**32))
+                random.seed(episode_seed)
+                self._fov_sensor.set_seed(episode_seed)
+            else:
+                # Fallback (không nên xảy ra)
+                fallback = int(np.random.randint(0, 2**31))
+                self._fov_sensor.set_seed(fallback)
 
-        # Build entities từ map_data (giữ nguyên)
+        # Build entities (giữ nguyên)
         self.stations  = self._build_stations(map_data)
         self.obstacles = self._build_obstacles(map_data)
         self.victims   = self._build_victims(map_data)
