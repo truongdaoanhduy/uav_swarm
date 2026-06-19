@@ -18,7 +18,7 @@ class SensorConfig:
     # ══════════════════════════════════════════════════════════
     # COMMUNICATION SENSOR
     # ══════════════════════════════════════════════════════════
-    comm_range_m: float = 20.0        # max comm distance (meters)
+    comm_range_m: float = 10.0        # max comm distance (meters)
 
     # ══════════════════════════════════════════════════════════
     # FOV SENSOR - GEOMETRY
@@ -30,11 +30,11 @@ class SensorConfig:
     # Model: P(detect | in_FOV) = p_base × exp(-decay × altitude)
     # ══════════════════════════════════════════════════════════
     p_detect_base: float = 0.5       # base prob at altitude = 0m
-    p_detect_decay: float = 0.04      # exponential decay per meter altitude
+    p_detect_decay: float = 0.2      # exponential decay per meter altitude
 
     enable_noise:       bool  = True
     motion_blur_coeff:  float = 0.06   # max penalty khi speed = max_speed
-    base_miss_rate:     float = 0.03   # hardware miss rate bất kể điều kiện
+    base_miss_rate:     float = 0.4   # hardware miss rate bất kể điều kiện
     # ══════════════════════════════════════════════════════════
     # DERIVED PROPERTIES
     # ══════════════════════════════════════════════════════════
