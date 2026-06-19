@@ -4,7 +4,7 @@ rewards package
 Reward functions.
 """
 
-from rewards.baseline_reward import SimpleBaselineReward
+from rewards.baseline_reward import BaselineReward
 
 # LLM reward (Phase 3 - optional)
 try:
@@ -15,7 +15,7 @@ except ImportError:
     LLM_REWARD_AVAILABLE = False
 
 __all__ = [
-    "SimpleBaselineReward",
+    "BaselineReward",
     "LLMReward",           # ← THÊM
     "load_llm_reward",     # ← THÊM
 ]
