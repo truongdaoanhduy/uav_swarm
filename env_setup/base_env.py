@@ -324,7 +324,7 @@ class SARBaseEnv(gym.Env):
                 "LLM" if self.baseline_reward is not None 
                 else "Baseline v4.0"
             )
-            print(f"[Ep {self._episode_id}] Using reward: {reward_type}")
+            print(f"Using reward: {reward_type}")
 
         # ✅ 9. Accumulate episode reward
         self._episode_reward_sum += global_reward["total"]
