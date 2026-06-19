@@ -516,8 +516,10 @@ class SARBaseEnv(gym.Env):
             "done_coverage_threshold",
             _DONE_COVERAGE_THRESHOLD,
         )
-        if coverage >= threshold and all(v.is_found for v in victims):
+        if coverage >= threshold:
             return "coverage"
+        if victims >= all(v.is_found for v in victims):
+            return "victims"
 
         all_disabled = all(u.state == UAVState.DISABLED for u in uavs)
         if all_disabled:
