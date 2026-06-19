@@ -15,6 +15,7 @@ class EnvConfig:
     # ══════════════════════════════════════════════════════════
     dt_seconds: float = 1
     max_steps: int = 600
+    done_coverage_threshold: float = 0.90  # >= 90% coverage -> episode complete
     
     # ══════════════════════════════════════════════════════════
     # FLEET PARAMETERS

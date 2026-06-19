@@ -18,8 +18,8 @@ class VictimConfig:
     # ══════════════════════════════════════════════════════════
     # POPULATION PARAMETERS
     # ══════════════════════════════════════════════════════════
-    n_victims_min: int = 5         # min victims per episode
-    n_victims_max: int = 20        # max victims per episode
+    n_victims_min: int = 30        # min victims per episode
+    n_victims_max: int = 45        # max victims per episode
 
     # ══════════════════════════════════════════════════════════
     # TYPE DISTRIBUTION

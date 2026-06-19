@@ -29,7 +29,7 @@ class SensorConfig:
     # FOV SENSOR - DETECTION PROBABILITY
     # Model: P(detect | in_FOV) = p_base × exp(-decay × altitude)
     # ══════════════════════════════════════════════════════════
-    p_detect_base: float = 0.95       # base prob at altitude = 0m
+    p_detect_base: float = 0.8       # base prob at altitude = 0m
     p_detect_decay: float = 0.04      # exponential decay per meter altitude
 
     enable_noise:       bool  = True
