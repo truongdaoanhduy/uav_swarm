@@ -148,7 +148,7 @@ def plot_comparison(
         axes[0, 0], runs_data,
         metric_key  = "ep_rewards",
         ylabel      = "Episode Reward",
-        title       = "📈 Episode Reward",
+        title       = "Episode Reward",
         window      = window,
         target_line = 0,
     )
@@ -157,7 +157,7 @@ def plot_comparison(
         axes[0, 1], runs_data,
         metric_key   = "ep_coverage",
         ylabel       = "Coverage (%)",
-        title        = "🗺️  Coverage Rate",
+        title        = "Coverage Rate",
         window       = window,
         target_line  = 70,
         target_label = "Target 70%",
@@ -168,7 +168,7 @@ def plot_comparison(
         axes[0, 2], runs_data,
         metric_key   = "ep_victims",
         ylabel       = "Victims Found (%)",
-        title        = "🆘 Victims Found Rate",
+        title        = "Victims Found Rate",
         window       = window,
         target_line  = 80,
         target_label = "Target 80%",
@@ -180,7 +180,7 @@ def plot_comparison(
         axes[1, 0], runs_data,
         metric_key = "ep_lengths",
         ylabel     = "Steps",
-        title      = "⏱️  Episode Length",
+        title      = "Episode Length",
         window     = window,
     )
 

@@ -1,44 +1,38 @@
-"""
-config/__init__.py
-Export all config classes.
-"""
+# config/__init__.py
 
 from .config import AppConfig
 from .env import EnvConfig
 from .uav import UAVConfig
 from .sensor import SensorConfig
-from .entity import VictimConfig, ObstacleConfig, DangerZoneConfig  # ← FIX: DangerZoneConfig
+from .entity import VictimConfig, ObstacleConfig, DangerZoneConfig
 from .reward import RewardConfig
 from .obs import ObsConfig
 from .train import TrainConfig
 from .curriculum_config import (
     StageConfig,
-    STAGE_HARD,STAGE_EXTREME,STAGE_TRANSFER
-    ,
+    STAGE_HARD,
+    STAGE_EXTREME,
+    STAGE_TRANSFER,
 )
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-__all__ = [
-    # Main config
-    "AppConfig",
 
-    # Sub-configs
+# ✅ XÓA: sys.path hack không cần thiết và gây bug
+# import sys
+# import os
+# sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+__all__ = [
+    "AppConfig",
     "EnvConfig",
     "UAVConfig",
     "SensorConfig",
     "VictimConfig",
     "ObstacleConfig",
-    "DangerZoneConfig",   # ← FIX: tên đúng
+    "DangerZoneConfig",
     "RewardConfig",
     "ObsConfig",
     "TrainConfig",
-    # "NoiseConfig"       ← XÓA: không tồn tại
-    # "DangerConfig"      ← XÓA: sai tên
-
-    # Curriculum
     "StageConfig",
     "STAGE_HARD",
     "STAGE_EXTREME",
-    "STAGE_TRANSFER"
+    "STAGE_TRANSFER",
 ]

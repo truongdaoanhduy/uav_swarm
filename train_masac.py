@@ -10,24 +10,64 @@ import os, random, numpy as np, torch
 from config import AppConfig, STAGE_HARD
 from training.algorithms.masac.trainer import MASACTrainer
 
+# train_masac.py
 
-def set_seed(seed: int):
+import argparse
+import os
+import random
+import numpy as np
+import torch
+
+from config import AppConfig, STAGE_HARD
+from training.algorithms.masac.trainer import MASACTrainer
+
+
+def set_seed(seed: int) -> None:
+    """
+    ✅ FIX: Set seed đầy đủ và đúng thứ tự.
+    
+    Thứ tự quan trọng:
+        1. CUBLAS env var TRƯỚC khi import torch (hoặc ít nhất trước cuda ops)
+        2. Python random
+        3. NumPy  
+        4. PyTorch CPU
+        5. PyTorch CUDA
+        6. CUDNN flags
+        7. use_deterministic_algorithms CUỐI CÙNG
+    """
+    # ✅ 1. Env vars TRƯỚC
+    os.environ["PYTHONHASHSEED"]          = str(seed)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # ← ":16:8" có thể thiếu bộ nhớ
+
+    # ✅ 2. Python random
     random.seed(seed)
+
+    # ✅ 3. NumPy
     np.random.seed(seed)
+
+    # ✅ 4. PyTorch
     torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+    # ✅ 5. CUDNN - benchmark=False BẮT BUỘC cho reproducibility
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
-    try:
-        torch.use_deterministic_algorithms(True)
-    except Exception:
-        pass
+    torch.backends.cudnn.benchmark     = False  # ← True sẽ chọn algo khác nhau mỗi lần
+
+    # ✅ 6. Deterministic algorithms - warn_only thay vì try/except
+    # warn_only=True: warning thay vì crash khi gặp non-deterministic op
+    # Không dùng try/except vì nó che giấu lỗi thật
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
+    print(f"[Seed] ✅ seed={seed} set toàn diện")
+    print(f"[Seed]    PYTHONHASHSEED={os.environ['PYTHONHASHSEED']}")
+    print(f"[Seed]    CUBLAS={os.environ['CUBLAS_WORKSPACE_CONFIG']}")
+    print(f"[Seed]    cudnn.benchmark=False, deterministic=True")
+
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="MASAC Training")
-
     parser.add_argument("--total-episodes",      type=int,   default=3000)
     parser.add_argument("--seed",                type=int,   default=42)
     parser.add_argument("--device",              type=str,   default="auto")
@@ -43,36 +83,32 @@ def parse_args():
         "--llm-reward", type=str, default=None,
         help="Path to LLM reward file (e.g., llm_reward_generated.py)"
     )
-
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
+
+    # ✅ FIX: set_seed TRƯỚC MỌI THỨ KHÁC
     set_seed(args.seed)
 
-    # ── Device ───────────────────────────────────────────────────────────────
     if args.device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     else:
         device = args.device
 
-    # ── Config ───────────────────────────────────────────────────────────────
+    # ✅ FIX: Ghi seed vào config để tất cả components dùng chung
     cfg = AppConfig()
     cfg.apply_stage(STAGE_HARD)
-    cfg.env.n_uav = 4
+    cfg.env.n_uav       = 4
+    cfg.env.global_seed = args.seed  # ← base_env dùng để tính episode seeds
+    cfg.env.eval_seed   = args.seed  # ← eval mode dùng
 
     if args.max_steps:
         cfg.env.max_steps = args.max_steps
 
-    # ── Run name + HF ────────────────────────────────────────────────────────
-    # ✅ Định nghĩa TRƯỚC khi dùng
-    run_name = args.run_name or f"masac_s{args.seed}"
-    HF_TOKEN = args.hf_token or os.getenv("HF_TOKEN")
-    HF_REPO  = "duy95/sar-uav-results"
-
-    # ── LLM Reward ───────────────────────────────────────────────────────────
-    # ✅ Chỉ giữ PATH — object load bên trong worker (safe với spawn)
+    run_name        = args.run_name or f"masac_s{args.seed}"
+    HF_TOKEN        = args.hf_token or os.getenv("HF_TOKEN")
+    HF_REPO         = "duy95/sar-uav-results"
     llm_reward_path = args.llm_reward
 
     if llm_reward_path:
@@ -125,13 +161,12 @@ def main():
         device          = device,
         run_name        = run_name,
         n_envs          = args.n_envs,
-        llm_reward_path = llm_reward_path,                      # ← PATH
+        llm_reward_path = llm_reward_path,
         hf_token        = HF_TOKEN if args.hf_upload else None,
         hf_repo         = HF_REPO  if args.hf_upload else None,
         hf_upload_every = args.hf_upload_every,
     )
 
-    # ── Train ────────────────────────────────────────────────────────────────
     trainer.train(
         total_episodes         = args.total_episodes,
         curriculum_manager     = None,

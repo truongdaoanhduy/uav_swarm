@@ -9,95 +9,94 @@ from typing import List, Tuple, Dict
 
 
 # env_setup/vec_env.py
+# vec_env.py - chỉ sửa env_worker()
 
 def env_worker(pipe, config_dict, seed, llm_reward_path=None):
     """
-    Worker process với seed progression.
+    Worker với deterministic episode seeds.
     
-    FIXED: Mỗi episode dùng seed khác nhau
-    ✅ FIX: Load LLM reward TRƯỚC initial reset
+    ✅ FIX: Thay rng.integers() bằng công thức deterministic
+    Episode seed = (worker_seed + episode_count * STRIDE) % 2^31
+    → Cùng worker_seed → cùng chuỗi seeds → reproducible
     """
     try:
+        import random as python_random
         from env_setup.sar_pettingzoo_env import SARPettingZooEnv
-        from config import AppConfig
-        
-        config = config_dict
-        n_agents = config.env.n_uav
-        obs_dim = config.obs.actor_dim
+
+        config      = config_dict
+        n_agents    = config.env.n_uav
+        obs_dim     = config.obs.actor_dim
         global_obs_dim = config.obs.critic_dim
-        
-        # ✅ Tạo env 1 LẦN DUY NHẤT
+
+        # ✅ FIX: Set seed ngay khi worker start
+        python_random.seed(seed)
+        np.random.seed(seed % (2**32))
+
         env = SARPettingZooEnv(config, render_mode=None)
-        
-        # ✅ Load LLM reward TRƯỚC khi reset
+
         if llm_reward_path is not None:
             try:
                 import sys, os
                 sys.path.insert(0, os.getcwd())
                 from rewards.llm_reward import load_llm_reward
-                
                 llm_reward = load_llm_reward(llm_reward_path, config)
                 env._base_env.baseline_reward = llm_reward
-                
-                print(f"[Worker pid={os.getpid()}] ✅ LLM reward injected BEFORE reset")
+                print(f"[Worker pid={os.getpid()}] ✅ LLM reward injected")
             except Exception as e:
-                print(f"[Worker pid={os.getpid()}] ⚠️  LLM inject failed: {e}")
+                print(f"[Worker pid={os.getpid()}] ⚠️ LLM inject failed: {e}")
                 import traceback
                 traceback.print_exc()
-        
-        # ✅ Cache (KHÔNG tạo env lại)
-        last_obs_array = np.zeros((n_agents, obs_dim), dtype=np.float32)
-        last_global_obs = np.zeros(global_obs_dim, dtype=np.float32)
+
+        # ✅ FIX: Hằng số stride đủ lớn để không overlap
+        EPISODE_SEED_STRIDE = 10_000
+
+        def _episode_seed(episode_idx: int) -> int:
+            """Deterministic: cùng worker_seed + idx → cùng seed."""
+            return (seed + episode_idx * EPISODE_SEED_STRIDE) % (2**31)
+
+        # Default cache
+        last_obs_array  = np.zeros((n_agents, obs_dim),    dtype=np.float32)
+        last_global_obs = np.zeros(global_obs_dim,          dtype=np.float32)
         last_info = {
             'uav_0': {
-                'coverage_rate':  0.0,
-                'victims_found':  0,
-                'victims_total':  1,
-                'global_obs':     np.zeros(global_obs_dim, dtype=np.float32),
-                'done_reason':    None,
-                'success':        False,
-                'battery_stats':  {'mean': 100.0, 'min': 100.0, 'max': 100.0, 'std': 0.0},
-                'n_active':       config.env.n_uav,
-                'n_returning':    0,
-                'n_charging':     0,
-                'n_deploying':    0,
-                'n_disabled':     0,
-                'n_total_uavs':   config.env.n_uav,
-                'n_accounted':    config.env.n_uav,
-                'step':           0,
-                'episode':        {
-                    'total_landings':    0,
-                    'total_charge_time': 0,
-                    'landings_per_uav':  {},
-                },
+                'coverage_rate': 0.0, 'victims_found': 0, 'victims_total': 1,
+                'global_obs': np.zeros(global_obs_dim, dtype=np.float32),
+                'done_reason': None, 'success': False,
+                'battery_stats': {'mean': 100.0, 'min': 100.0,
+                                  'max': 100.0,  'std': 0.0},
+                'n_active': config.env.n_uav, 'n_returning': 0,
+                'n_charging': 0, 'n_deploying': 0, 'n_disabled': 0,
+                'n_total_uavs': config.env.n_uav,
+                'n_accounted': config.env.n_uav, 'step': 0,
+                'episode': {'total_landings': 0, 'total_charge_time': 0,
+                            'landings_per_uav': {}},
             }
         }
-        
-        # ✅ Episode counter + RNG
+
         episode_count = 0
-        rng = np.random.default_rng(seed)
-        
-        # ✅ Initial reset (SAU khi inject LLM)
-        current_seed = seed
-        obs, info = env.reset(seed=current_seed)
+
+        # ✅ FIX: Initial reset với seed[0] deterministic
+        obs, info = env.reset(seed=_episode_seed(episode_count))
         episode_count += 1
-        
+
         if obs:
             agent_ids = sorted(obs.keys())
-            last_obs_array = np.stack([obs[aid] for aid in agent_ids], axis=0)
+            last_obs_array = np.stack(
+                [obs[aid] for aid in agent_ids], axis=0
+            ).astype(np.float32)
         if info and 'uav_0' in info:
             last_global_obs = info['uav_0']['global_obs'].copy()
             last_info = info
-        
-        # ✅ Worker loop (giữ nguyên)
+
+        # Worker loop
         while True:
             cmd, data = pipe.recv()
-            
+
             if cmd == "reset":
-                current_seed = int(rng.integers(0, 2**31))
-                obs, info = env.reset(seed=current_seed)
+                # ✅ FIX: Dùng episode_count làm index, không dùng rng.integers()
+                obs, info = env.reset(seed=_episode_seed(episode_count))
                 episode_count += 1
-                
+
                 if obs:
                     agent_ids = sorted(obs.keys())
                     last_obs_array = np.stack(
@@ -106,19 +105,17 @@ def env_worker(pipe, config_dict, seed, llm_reward_path=None):
                 if info and 'uav_0' in info:
                     last_global_obs = info['uav_0']['global_obs'].copy()
                     last_info = info
-                
+
                 pipe.send((
                     last_obs_array.copy(),
                     last_global_obs.copy(),
-                    last_info
+                    last_info,
                 ))
-                
+
             elif cmd == "step":
-                actions = data
-                actions_dict = {
-                    f"uav_{i}": actions[i] for i in range(n_agents)
-                }
-                
+                actions      = data
+                actions_dict = {f"uav_{i}": actions[i] for i in range(n_agents)}
+
                 obs, rewards, terms, truncs, info = env.step(actions_dict)
                 done = any(terms.values()) or any(truncs.values())
 
@@ -126,40 +123,38 @@ def env_worker(pipe, config_dict, seed, llm_reward_path=None):
                     obs_arrays = []
                     for i in range(n_agents):
                         aid = f"uav_{i}"
-                        if aid in obs:
-                            obs_arrays.append(obs[aid])
-                        else:
-                            obs_arrays.append(
-                                np.zeros(obs_dim, dtype=np.float32)
-                            )
-                    last_obs_array = np.stack(
-                        obs_arrays, axis=0
-                    ).astype(np.float32)
-                
+                        obs_arrays.append(
+                            obs[aid] if aid in obs
+                            else np.zeros(obs_dim, dtype=np.float32)
+                        )
+                    last_obs_array = np.stack(obs_arrays).astype(np.float32)
+
                 if info and 'uav_0' in info:
                     last_global_obs = info['uav_0']['global_obs'].copy()
                     last_info = info
-                
+
                 rewards_array = np.zeros(n_agents, dtype=np.float32)
                 if rewards:
                     for i in range(n_agents):
                         aid = f"uav_{i}"
                         if aid in rewards:
                             rewards_array[i] = rewards[aid]
-                
+
                 pipe.send((
                     last_obs_array.copy(),
                     last_global_obs.copy(),
                     rewards_array.copy(),
                     done,
-                    last_info
+                    last_info,
                 ))
-                
+
                 if done:
-                    current_seed = int(rng.integers(0, 2**31))
-                    obs_new, info_new = env.reset(seed=current_seed)
+                    # ✅ FIX: Auto-reset cũng dùng deterministic seed
+                    obs_new, info_new = env.reset(
+                        seed=_episode_seed(episode_count)
+                    )
                     episode_count += 1
-                    
+
                     if obs_new:
                         agent_ids = sorted(obs_new.keys())
                         last_obs_array = np.stack(
@@ -168,10 +163,10 @@ def env_worker(pipe, config_dict, seed, llm_reward_path=None):
                     if info_new and 'uav_0' in info_new:
                         last_global_obs = info_new['uav_0']['global_obs'].copy()
                         last_info = info_new
-                    
+
             elif cmd == "close":
                 break
-                
+
     except (EOFError, BrokenPipeError, KeyboardInterrupt):
         pass
     except Exception as e:
@@ -180,16 +175,16 @@ def env_worker(pipe, config_dict, seed, llm_reward_path=None):
         traceback.print_exc()
         try:
             pipe.send(None)
-        except:
+        except Exception:
             pass
     finally:
         try:
             env.close()
-        except:
+        except Exception:
             pass
         try:
             pipe.close()
-        except:
+        except Exception:
             pass
 
 from numpy.random import SeedSequence

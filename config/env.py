@@ -33,10 +33,9 @@ class EnvConfig:
     # ══════════════════════════════════════════════════════════
     # OBJECT PLACEMENT CONSTRAINTS
     # ══════════════════════════════════════════════════════════
-    max_place_attempts: int = 1000  # ✅ INCREASED: 200 → 500 (FIX-P1E)
-    
-    # ✅ FIX 3.1+3.2: UNIFIED placement params (single source of truth)
-    min_object_spacing_m: float = 2.5  # ✅ CHANGED: 2.0 → 2.5 (sync với MapGenerator)
+    max_place_attempts: int = 1000
+
+    min_object_spacing_m: float = 2.5
     
     # Victim placement
     victim_clearance_m: float = 1.5
@@ -46,18 +45,25 @@ class EnvConfig:
     # UAV spawn
     uav_spawn_radius_m: float = 3.0
     
-    # ✅ FIX 3.1: Progressive relaxation params (used by MapGenerator)
-    placement_relax_threshold: float = 0.7   # Relax after 70% attempts
-    placement_relaxed_spacing_m: float = 1.5 # Relaxed spacing (meters)
-    allow_partial_obstacles: bool = True     # Skip instead of crash
-    warn_on_skipped_objects: bool = False     # Log warnings
+    # Progressive relaxation params
+    placement_relax_threshold: float = 0.7
+    placement_relaxed_spacing_m: float = 1.5
+    allow_partial_obstacles: bool = True
+    warn_on_skipped_objects: bool = False
     
     # ══════════════════════════════════════════════════════════
-    # REPRODUCIBILITY & ABLATION CONTROL
+    # ✅ REPRODUCIBILITY - THÊM MỚI
     # ══════════════════════════════════════════════════════════
-    deterministic_eval: bool = False    # ✅ FIX 3.3: Enable fixed-seed eval
-    eval_seed: int = 42                 # Fixed seed for evaluation episodes
-    
+    deterministic_eval: bool = False
+    eval_seed: int = 42
+
+    # ✅ THÊM: global_seed cho training reproducibility
+    # Episode seed = global_seed + episode_id (deterministic, không dùng time.time())
+    global_seed: int = 42
+
+    # ✅ THÊM: debug flag cho obs sanity check
+    debug_obs: bool = False
+
     # ══════════════════════════════════════════════════════════
     # DERIVED PROPERTIES
     # ══════════════════════════════════════════════════════════

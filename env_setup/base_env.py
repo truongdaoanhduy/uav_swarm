@@ -119,30 +119,35 @@ class SARBaseEnv(gym.Env):
     # ── Reset ────────────────────────────────────────────────────────────────
 
     def reset(
-        self,
-        seed:    int | None = None,
-        options: dict | None = None,
-    ) -> tuple[dict[int, np.ndarray], dict]:
+    self,
+    seed:    int | None = None,
+    options: dict | None = None,
+) -> tuple[dict[int, np.ndarray], dict]:
         super().reset(seed=seed)
 
+        # ✅ FIX: KHÔNG BAO GIỜ dùng time.time() làm seed
+        # time.time() thay đổi mỗi lần chạy → không reproducible
         if seed is None:
             if self.cfg.env.deterministic_eval:
+                # Eval mode: luôn cố định
                 seed = self.cfg.env.eval_seed
-                logger.info("Deterministic eval mode: seed=%d", seed)
             else:
-                seed = int(time.time() * 1000) % (2 ** 31)
+                # Training mode: global_seed + episode_id
+                # → Khác nhau mỗi episode NHƯNG reproducible
+                # → Chạy lại với cùng global_seed → cùng kết quả
+                seed = (self.cfg.env.global_seed + self._episode_id) % (2**31)
 
         self._episode_seed        = seed
         self._episode_id         += 1
-        self._ep_start_time       = time.time()
+        self._ep_start_time       = time.time()   # ← time.time() chỉ dùng để đo wall clock, OK
         self._episode_reward_sum  = 0.0
         self._step_rewards_history = []
 
         self._active_reward_fn.reset()
 
         map_data = self._map_gen.generate(
-            n_victims_override=self._n_victims_ov,
-            seed=seed,
+            n_victims_override = self._n_victims_ov,
+            seed               = seed,   # ← seed deterministic
         )
         self.backend.reset(map_data)
 
