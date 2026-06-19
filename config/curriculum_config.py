@@ -78,10 +78,10 @@ STAGE_HARD = StageConfig(
     name="hard",
     map_size=250,
     n_uav=4,
-    n_victims_min=30,
-    n_victims_max=40,
+    n_victims_min=40,
+    n_victims_max=55,
     n_debris=30,
-    n_danger_total=8,
+    n_danger_total=12,
     station_capacity=1,
     max_steps=2500,
     min_episodes=500,
@@ -99,8 +99,8 @@ STAGE_EXTREME = StageConfig(
     # coverage_pressure = 30,625 m²/UAV ← 2× HARD
 
     # ══ VICTIMS: density ~ 0.50/1000m² (consistent với HARD) ══
-    n_victims_min=55,
-    n_victims_max=68,
+    n_victims_min=70,
+    n_victims_max=90,
 
     # ══ OBSTACLES: TĂNG MẠNH ═══════════════════════════════
     # HARD: (30+8)/62500 = 0.608/1000m²
@@ -126,8 +126,8 @@ STAGE_TRANSFER = StageConfig(
     n_uav=4,
     
     # Victims giữ nguyên
-    n_victims_min=40,
-    n_victims_max=50,
+    n_victims_min=55,
+    n_victims_max=70,
     
     # ══ OBSTACLES: TĂNG cho eval khó hơn ═══════════════════
     # (60+18)/90000*1000 = 0.867/1000m² ← higher than HARD

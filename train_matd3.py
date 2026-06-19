@@ -25,6 +25,21 @@ def set_seed(seed: int):
         pass
 
 
+def apply_matd3_noise_config(
+    cfg: AppConfig,
+    explore_noise: float | None = None,
+    target_noise: float | None = None,
+    noise_clip: float | None = None,
+) -> None:
+    """Adjust MATD3 exploration/target smoothing noise from CLI or experiments."""
+    if explore_noise is not None:
+        cfg.train.matd3_explore_noise = max(0.0, float(explore_noise))
+    if target_noise is not None:
+        cfg.train.matd3_target_noise = max(0.0, float(target_noise))
+    if noise_clip is not None:
+        cfg.train.matd3_noise_clip = max(0.0, float(noise_clip))
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="MATD3 Training")
 
@@ -34,6 +49,12 @@ def parse_args():
     parser.add_argument("--run-name",            type=str,   default=None)
     parser.add_argument("--n-envs",              type=int,   default=1)
     parser.add_argument("--max-steps",           type=int,   default=None)
+    parser.add_argument("--n-victims-min",       type=int,   default=None)
+    parser.add_argument("--n-victims-max",       type=int,   default=None)
+    parser.add_argument("--coverage-threshold",  type=float, default=None)
+    parser.add_argument("--explore-noise",       type=float, default=None)
+    parser.add_argument("--target-noise",        type=float, default=None)
+    parser.add_argument("--noise-clip",          type=float, default=None)
     parser.add_argument("--log-interval",        type=int,   default=50)
     parser.add_argument("--checkpoint-interval", type=int,   default=100)
     parser.add_argument("--hf-token",            type=str,   default=None)
@@ -64,6 +85,20 @@ def main():
 
     if args.max_steps:
         cfg.env.max_steps = args.max_steps
+    if args.n_victims_min is not None:
+        cfg.victim.n_victims_min = args.n_victims_min
+    if args.n_victims_max is not None:
+        cfg.victim.n_victims_max = args.n_victims_max
+    if cfg.victim.n_victims_min > cfg.victim.n_victims_max:
+        raise ValueError("--n-victims-min must be <= --n-victims-max")
+    if args.coverage_threshold is not None:
+        cfg.env.done_coverage_threshold = float(np.clip(args.coverage_threshold, 0.0, 1.0))
+    apply_matd3_noise_config(
+        cfg,
+        explore_noise=args.explore_noise,
+        target_noise=args.target_noise,
+        noise_clip=args.noise_clip,
+    )
 
     # ── Run name + HF ────────────────────────────────────────────────────────
     # ✅ Định nghĩa TRƯỚC khi dùng
@@ -93,6 +128,8 @@ def main():
     print(f"ENVIRONMENT:")
     print(f"  Map       : {cfg.env.map_size}×{cfg.env.map_size}m")
     print(f"  Max Steps : {cfg.env.max_steps}")
+    print(f"  Victims   : {cfg.victim.n_victims_min}-{cfg.victim.n_victims_max}")
+    print(f"  Done Cov  : {cfg.env.done_coverage_threshold:.0%}")
     print(f"  n_envs    : {args.n_envs}")
     print(f"  seed      : {args.seed}")
     print(f"  device    : {device}")
@@ -105,6 +142,8 @@ def main():
     print(f"  lr_critic : {tr.matd3_lr_critic}")
     print(f"  gamma/tau : {tr.matd3_gamma}/{tr.matd3_tau}")
     print(f"  policy_delay : {tr.matd3_policy_delay}")
+    print(f"  explore_noise: {tr.matd3_explore_noise}")
+    print(f"  target_noise : {tr.matd3_target_noise}")
     print(f"  noise_clip   : {tr.matd3_noise_clip}")
     print(f"  warmup    : {tr.matd3_warmup_steps:,} steps")
     print(f"  actor_h   : {tr.matd3_actor_hidden}")

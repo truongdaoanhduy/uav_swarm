@@ -124,7 +124,6 @@ def main():
     tr = cfg.train
     print(f"{'='*70}")
     print(f"🔥 MASAC TRAINING — HARD STAGE")
-    print(f"   Reward: {'LLM' if llm_reward_path else 'Baseline v4.0'}")
     print(f"{'='*70}")
     print(f"ENVIRONMENT:")
     print(f"  Map       : {cfg.env.map_size}×{cfg.env.map_size}m")

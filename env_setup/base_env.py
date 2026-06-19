@@ -33,7 +33,7 @@ from config import AppConfig
 from core.map_generator import MapGenerator
 from entities.uav import UAV, UAVState
 from observation.obs_builder import ObservationBuilder
-from rewards.baseline_reward import BaselineReward
+from rewards.baseline_reward import SimpleBaselineReward
 from utils.logger import EpisodeLogger
 from visualization.renderer_factory import create_renderer
 
@@ -92,7 +92,7 @@ class SARBaseEnv(gym.Env):
         )
 
         self._map_gen   = MapGenerator(self.cfg)
-        self._reward_fn = BaselineReward(self.cfg)
+        self._reward_fn = SimpleBaselineReward(self.cfg)
         self.baseline_reward = None
         if backend == "logic":
             from env_setup.backends.logic_backend import LogicBackend
@@ -511,7 +511,12 @@ class SARBaseEnv(gym.Env):
         return obs_dict, result.critic_obs.copy()
 
     def _check_done(self, coverage, victims, uavs) -> str | None:
-        if coverage >= 0.9:
+        threshold = getattr(
+            self.cfg.env,
+            "done_coverage_threshold",
+            _DONE_COVERAGE_THRESHOLD,
+        )
+        if coverage >= threshold:
             return "coverage"
 
         if victims and all(v.is_found for v in victims):
