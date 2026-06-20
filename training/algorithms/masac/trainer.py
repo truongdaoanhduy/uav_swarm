@@ -58,6 +58,7 @@ class _EnvWrapper:
         self.obs_dim  = config.obs.actor_dim
         self._config  = config
         self._seed    = seed
+        self._single_episode_count = 0
 
         # ✅ Inject LLM reward cho single env
         if n_envs == 1:
@@ -93,7 +94,8 @@ class _EnvWrapper:
         if self._is_vec:
             obs, g = self._env.reset()
         else:
-            obs_d, info = self._env.reset(seed=self._seed)
+            obs_d, info = self._env.reset(seed=self._episode_seed())
+            self._single_episode_count += 1
             obs = np.array(
                 [obs_d[f"uav_{i}"] for i in range(self.n_agents)],
                 dtype=np.float32,
@@ -138,7 +140,8 @@ class _EnvWrapper:
         )[None]
 
         if done:
-            new_seed    = int(np.random.randint(0, 2**31))
+            new_seed    = self._episode_seed()
+            self._single_episode_count += 1
             new_obs_d, new_info = self._env.reset(seed=new_seed)
             new_obs = np.array(
                 [new_obs_d.get(f"uav_{i}", np.zeros(self.obs_dim, np.float32))
@@ -153,6 +156,9 @@ class _EnvWrapper:
             self._current_global = g_next
 
         return obs_next, g_next, rews, [done], [info]
+
+    def _episode_seed(self) -> int:
+        return (self._seed + self._single_episode_count * 10_000) % (2**31)
 
     def close(self):
         try:
@@ -280,6 +286,7 @@ class MASACTrainer:
         self.total_episodes_done = 0
         self.total_steps         = 0
         self.update_count        = 0
+        self._np_rng             = np.random.default_rng(0)
 
         self._next_log_ep        = 0
         self._next_checkpoint_ep = 0
@@ -315,6 +322,8 @@ class MASACTrainer:
         checkpoint_every_n_eps: int       = 100,
     ):
         start_time = time.time()
+        self._np_rng = np.random.default_rng(seed + 17)
+        self.buffer.set_seed(seed + 31)
         env = _EnvWrapper(
                 self.config,
                 self.n_envs,
@@ -354,7 +363,7 @@ class MASACTrainer:
 
             with torch.no_grad():
                 if self.total_steps < self.warmup_steps:
-                    act_np       = np.random.uniform(-1, 1, (n * self.n_agents, self.action_dim))
+                    act_np       = self._np_rng.uniform(-1, 1, (n * self.n_agents, self.action_dim))
                     act_np[:, 3] = (act_np[:, 3] > 0.5).astype(np.float32)
                 else:
                     act_t, _ = self.actor.get_action(obs_t, deterministic=False)

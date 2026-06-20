@@ -4,23 +4,18 @@
 Supports Baseline v4.0 and LLM-generated rewards
 """
 
-import argparse
-import os, random, numpy as np, torch
-
-from config import AppConfig, STAGE_HARD
-from training.algorithms.masac.trainer import MASACTrainer
-
-# train_masac.py
-
-import argparse
 import os
+
+# Must be set before importing torch for deterministic CUDA matmul/cuBLAS.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+import argparse
 import random
 import numpy as np
 import torch
 
 from config import AppConfig, STAGE_HARD
 from training.algorithms.masac.trainer import MASACTrainer
-
 
 def set_seed(seed: int) -> None:
     """
@@ -35,9 +30,9 @@ def set_seed(seed: int) -> None:
         6. CUDNN flags
         7. use_deterministic_algorithms CUỐI CÙNG
     """
-    # ✅ 1. Env vars TRƯỚC
+    # ✅ 1. Env vars TRƯỚC torch CUDA ops
     os.environ["PYTHONHASHSEED"]          = str(seed)
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # ← ":16:8" có thể thiếu bộ nhớ
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
     # ✅ 2. Python random
     random.seed(seed)

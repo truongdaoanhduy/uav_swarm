@@ -1,342 +1,288 @@
 #!/usr/bin/env python3
 """
-📊 Plot So Sánh MAPPO vs MASAC vs MATD3
-Download metrics từ HuggingFace → plot → save
-
+📊 Plot So Sánh - Style Paper
 Usage:
-    python plot_compare.py
-    python plot_compare.py --runs mappo_s42 masac_s42 matd3_s42
-    python plot_compare.py --local-dir ./downloaded_metrics
-    python plot_compare.py --save-dir ./plots
+    python plot_compare.py /path/to/run1 /path/to/run2 --save-dir ./plots
 """
 
 import argparse
 import json
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from hf_upload import HFDownloader
-
-
-# ── Màu cố định cho từng thuật toán ──────────────────────────────────────────
-ALGO_COLORS = {
-    "mappo":  "#2196F3",   # Blue
-    "masac":  "#F44336",   # Red
-    "matd3":  "#4CAF50",   # Green
+# ── Colors ───────────────────────────────────────────────────────────────────
+RUN_COLORS = {
+    "masac_reward_base_new_1": "#E53935",  # Red
+    "masac_reward_base_new_2": "#1E88E5",  # Blue
 }
 
-ALGO_LABELS = {
-    "mappo":  "MAPPO",
-    "masac":  "MASAC",
-    "matd3":  "MATD3",
+PALETTE = [
+    "#1E88E5",  # Blue
+    "#E53935",  # Red  
+    "#43A047",  # Green
+    "#FB8C00",  # Orange
+    "#8E24AA",  # Purple
+    "#00ACC1",  # Cyan
+]
+
+LABEL_MAP = {
+    "masac_reward_base_new_1": "MASAC v1 (Old Reward)",
+    "masac_reward_base_new_2": "MASAC v2 (New Reward)",
 }
 
-
-def _detect_algo(run_name: str) -> str:
-    rn = run_name.lower()
-    for algo in ["mappo", "masac", "matd3"]:
-        if algo in rn:
-            return algo
-    return "unknown"
+MARKERS = ['o', 's', '^', 'v', 'D', 'p']
 
 
-def _smooth(data: List[float], window: int) -> np.ndarray:
+def _get_color(run_name: str, idx: int) -> str:
+    return RUN_COLORS.get(run_name, PALETTE[idx % len(PALETTE)])
+
+
+def _get_label(run_name: str) -> str:
+    return LABEL_MAP.get(run_name, run_name)
+
+
+def _smooth(data: np.ndarray, window: int) -> np.ndarray:
+    """Moving average smoothing."""
     if len(data) < window:
-        return np.array(data)
-    return np.convolve(data, np.ones(window) / window, mode="valid")
+        return data
+    kernel = np.ones(window) / window
+    return np.convolve(data, kernel, mode='valid')
 
 
-def _plot_single_metric(
-    runs_data:   Dict[str, Dict],
-    metric_key:  str,
-    ylabel:      str,
-    title:       str,
-    save_path:   str,
-    window:      int  = 50,
-    target_line: float = None,
-    target_label: str = None,
-    ylim:        tuple = None,
+def _plot_metric(
+    runs_data:    Dict[str, Dict],
+    metric_key:   str,
+    ylabel:       str,
+    title:        str,
+    save_path:    str,
+    smooth_window: int   = 20,      # Smooth vừa phải
+    n_markers:     int   = 15,      # Số markers trên đường
+    target_line:   float = None,
+    target_label:  str   = None,
+    ylim:          tuple = None,
 ):
-    """Plot 1 metric riêng lẻ và lưu file."""
+    """Plot clean - smooth + marker thưa, giống style paper."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    # ── Style theo paper ──────────────────────────────────────────────────
+    plt.rcParams.update({
+        'font.family':      'DejaVu Sans',
+        'font.size':        12,
+        'axes.linewidth':   1.2,
+        'xtick.major.width': 1.2,
+        'ytick.major.width': 1.2,
+        'xtick.minor.visible': False,
+        'ytick.minor.visible': False,
+    })
+
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Group theo algo
-    algo_data: Dict[str, List[List[float]]] = {}
-
-    for run_name, metrics in runs_data.items():
-        algo = _detect_algo(run_name)
+    for idx, (run_name, metrics) in enumerate(runs_data.items()):
         data = metrics.get(metric_key, [])
         if not data:
+            print(f"  ⚠️  [{run_name}] no data for '{metric_key}'")
             continue
-        if algo not in algo_data:
-            algo_data[algo] = []
-        algo_data[algo].append(data)
 
-    for algo, all_seeds in sorted(algo_data.items()):
-        color = ALGO_COLORS.get(algo, "gray")
-        label = ALGO_LABELS.get(algo, algo.upper())
+        raw    = np.array(data, dtype=float)
+        color  = _get_color(run_name, idx)
+        label  = _get_label(run_name)
+        marker = MARKERS[idx % len(MARKERS)]
 
-        # Align lengths (min length across seeds)
-        min_len = min(len(d) for d in all_seeds)
-        arr     = np.array([d[:min_len] for d in all_seeds])  # [n_seeds, T]
-
-        episodes = np.arange(1, min_len + 1)
-
-        if len(all_seeds) == 1:
-            # Single seed: plot raw + smoothed
-            raw = arr[0]
-            ax.plot(episodes, raw, alpha=0.15, color=color, linewidth=0.5)
-
-            if min_len >= window:
-                sm  = _smooth(raw, window)
-                sx  = np.arange(window, min_len + 1)
-                ax.plot(sx, sm, color=color, linewidth=2.5, label=label)
-            else:
-                ax.plot(episodes, raw, color=color, linewidth=2.5, label=label)
-
+        # ── Smooth ────────────────────────────────────────────────────────
+        if len(raw) >= smooth_window:
+            smoothed = _smooth(raw, smooth_window)
+            # x axis bắt đầu từ smooth_window//2 để center
+            x_smooth = np.arange(smooth_window - 1, len(raw))
         else:
-            # Multi-seed: plot mean ± std
-            mean = arr.mean(axis=0)
-            std  = arr.std(axis=0)
+            smoothed = raw
+            x_smooth = np.arange(len(raw))
 
-            if min_len >= window:
-                sm_mean = _smooth(mean, window)
-                sm_std  = _smooth(std,  window)
-                sx      = np.arange(window, min_len + 1)
-                ax.plot(sx, sm_mean, color=color, linewidth=2.5, label=f"{label} (n={len(all_seeds)})")
-                ax.fill_between(sx, sm_mean - sm_std, sm_mean + sm_std, alpha=0.2, color=color)
-            else:
-                ax.plot(episodes, mean, color=color, linewidth=2.5, label=f"{label} (n={len(all_seeds)})")
-                ax.fill_between(episodes, mean - std, mean + std, alpha=0.2, color=color)
+        # ── Chọn vị trí markers thưa ──────────────────────────────────────
+        n_pts     = len(smoothed)
+        mark_step = max(1, n_pts // n_markers)
+        mark_idx  = np.arange(0, n_pts, mark_step)
 
+        # ── Plot đường smooth ─────────────────────────────────────────────
+        ax.plot(
+            x_smooth, smoothed,
+            color=color,
+            linewidth=2.2,
+            alpha=0.95,
+            zorder=3,
+        )
+
+        # ── Plot markers thưa (riêng biệt để đẹp hơn) ────────────────────
+        ax.plot(
+            x_smooth[mark_idx], smoothed[mark_idx],
+            color=color,
+            marker=marker,
+            markersize=7,
+            linewidth=0,          # Không vẽ đường, chỉ markers
+            markerfacecolor=color,
+            markeredgecolor='white',
+            markeredgewidth=1.2,
+            label=label,
+            zorder=4,
+        )
+
+    # ── Target line ───────────────────────────────────────────────────────
     if target_line is not None:
         ax.axhline(
             target_line,
-            color     = "orange",
-            linestyle = "--",
-            linewidth = 1.5,
-            alpha     = 0.8,
-            label     = target_label or f"Target {target_line}",
+            color='gray',
+            linestyle='--',
+            linewidth=1.5,
+            alpha=0.6,
+            label=target_label or f"Target {target_line}",
+            zorder=1,
         )
 
-    ax.set_xlabel("Episode",  fontsize=13)
-    ax.set_ylabel(ylabel,     fontsize=13)
-    ax.set_title(title,       fontsize=15, fontweight="bold", pad=20)
-    ax.legend(fontsize=11, loc="best", framealpha=0.9)
-    ax.grid(alpha=0.3, linestyle="--")
+    # ── Labels & Style ────────────────────────────────────────────────────
+    ax.set_xlabel("Episode",  fontsize=13, fontweight='bold')
+    ax.set_ylabel(ylabel,     fontsize=13, fontweight='bold')
+    ax.set_title(title,       fontsize=15, fontweight='bold', pad=15)
 
+    # Legend - box có border như paper
+    ax.legend(
+        fontsize=11,
+        loc='best',
+        framealpha=0.95,
+        edgecolor='black',
+        fancybox=False,
+        borderpad=0.8,
+    )
+
+    # Grid dashed nhẹ như paper
+    ax.grid(True, linestyle='--', linewidth=0.7, alpha=0.4, color='gray')
+    ax.set_axisbelow(True)  # Grid ở dưới đường vẽ
+
+    # Giới hạn trục
     if ylim:
         ax.set_ylim(*ylim)
 
+    ax.set_xlim(left=0)
+
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    print(f"✅ Saved: {save_path}")
-
-
-def plot_sample_efficiency(runs_data: Dict[str, Dict], save_path: str, window: int = 50):
-    """Plot Sample Efficiency: reward vs steps."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    has_data = False
-
-    for run_name, metrics in runs_data.items():
-        algo     = _detect_algo(run_name)
-        color    = ALGO_COLORS.get(algo, "gray")
-        label    = ALGO_LABELS.get(algo, algo.upper())
-        rewards  = metrics.get("ep_rewards", [])
-        n_steps  = metrics.get("total_steps", None)
-
-        if rewards and n_steps:
-            has_data = True
-            n_eps        = len(rewards)
-            steps_approx = np.linspace(0, n_steps, n_eps)
-
-            sm_r = _smooth(rewards, window) if len(rewards) >= window else np.array(rewards)
-            sx   = steps_approx[window - 1:] if len(rewards) >= window else steps_approx
-
-            ax.plot(sx, sm_r, color=color, linewidth=2.5, label=label)
-
-    if has_data:
-        ax.set_xlabel("Environment Steps", fontsize=13)
-        ax.set_ylabel("Reward",            fontsize=13)
-        ax.set_title("⚡ Sample Efficiency", fontsize=15, fontweight="bold", pad=20)
-        ax.legend(fontsize=11, loc="best", framealpha=0.9)
-        ax.grid(alpha=0.3, linestyle="--")
-        
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        print(f"✅ Saved: {save_path}")
-    else:
-        plt.close(fig)
-        print(f"⚠️  Skipped sample_efficiency (no step data)")
+    print(f"  ✅ Saved: {save_path}")
 
 
 def plot_summary_table(runs_data: Dict[str, Dict], save_path: str):
-    """Plot Summary Table."""
+    """Summary table đẹp."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 3 + len(runs_data)))
     ax.axis("off")
 
-    rows  = []
-    cols  = ["Algorithm", "Runs", "Reward", "Coverage", "Victims"]
+    rows = []
+    cols = ["Run", "Episodes", "Reward (mean)", "Reward (last 50)", "Best Reward"]
 
-    algo_summary: Dict[str, Dict] = {}
     for run_name, metrics in runs_data.items():
-        algo = _detect_algo(run_name)
-        if algo not in algo_summary:
-            algo_summary[algo] = {"rewards": [], "coverage": [], "victims": []}
-
         ep_r = metrics.get("ep_rewards", [])
-        ep_c = metrics.get("ep_coverage", [])
-        ep_v = metrics.get("ep_victims", [])
+        n    = len(ep_r)
 
         if ep_r:
-            algo_summary[algo]["rewards"].append(float(np.mean(ep_r[-100:])))
-        if ep_c:
-            algo_summary[algo]["coverage"].append(float(np.mean(ep_c[-100:])))
-        if ep_v:
-            algo_summary[algo]["victims"].append(float(np.mean(ep_v[-100:])))
-
-    for algo in ["mappo", "masac", "matd3"]:
-        if algo not in algo_summary:
-            continue
-        s     = algo_summary[algo]
-        n     = len(s["rewards"])
-        r_mu  = np.mean(s["rewards"])  if s["rewards"]  else 0
-        c_mu  = np.mean(s["coverage"]) if s["coverage"] else 0
-        v_mu  = np.mean(s["victims"])  if s["victims"]  else 0
+            r_all  = float(np.mean(ep_r))
+            r_last = float(np.mean(ep_r[-50:])) if n >= 50 else float(np.mean(ep_r))
+            r_best = float(np.max(ep_r))
+        else:
+            r_all = r_last = r_best = 0
 
         rows.append([
-            ALGO_LABELS.get(algo, algo.upper()),
+            _get_label(run_name),
             str(n),
-            f"{r_mu:.1f}",
-            f"{c_mu:.1f}%",
-            f"{v_mu:.1f}%",
+            f"{r_all:.1f}",
+            f"{r_last:.1f}",
+            f"{r_best:.1f}",
         ])
 
     if rows:
         tbl = ax.table(
-            cellText     = rows,
-            colLabels    = cols,
-            cellLoc      = "center",
-            loc          = "center",
+            cellText=rows, colLabels=cols,
+            cellLoc="center", loc="center"
         )
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(12)
-        tbl.scale(1.3, 2.5)
+        tbl.scale(1.3, 2.8)
 
-        # Header color
+        # Header
         for j in range(len(cols)):
             tbl[0, j].set_facecolor("#37474F")
             tbl[0, j].set_text_props(color="white", fontweight="bold")
 
-        # Row colors per algo
-        algo_list = [r[0].lower() for r in rows]
-        for i, algo_label in enumerate(algo_list):
-            algo_key = next((k for k, v in ALGO_LABELS.items() if v == rows[i][0]), None)
-            if algo_key:
-                c = ALGO_COLORS.get(algo_key, "#ECEFF1")
-                for j in range(len(cols)):
-                    tbl[i + 1, j].set_facecolor(c + "40")  # 25% opacity
+        # Row color
+        for i, (run_name, _) in enumerate(runs_data.items()):
+            c = _get_color(run_name, i)
+            for j in range(len(cols)):
+                tbl[i + 1, j].set_facecolor(c + "25")
 
-        ax.set_title("📋 Summary (last 100 episodes)", 
-                     fontsize=15, fontweight="bold", pad=20)
-
+        ax.set_title("Summary Statistics", fontsize=14, fontweight="bold", pad=20)
         plt.tight_layout()
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.savefig(save_path, dpi=300, bbox_inches="tight", facecolor='white')
         plt.close(fig)
-        print(f"✅ Saved: {save_path}")
-    else:
-        plt.close(fig)
-        print(f"⚠️  Skipped summary table (no data)")
+        print(f"  ✅ Saved: {save_path}")
 
 
-def plot_all_metrics(
-    runs_data:  Dict[str, Dict],
-    save_dir:   str = "./plots",
-    window:     int = 50,
+def plot_all(
+    runs_data:     Dict[str, Dict],
+    save_dir:      str = "./plots",
+    smooth_window: int = 20,
+    n_markers:     int = 15,
 ):
-    """Plot tất cả metrics ra từng file riêng."""
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
+    print(f"\n📊 Saving plots → {save_path}\n")
 
-    print(f"\n📊 Plotting metrics to: {save_path}")
-
-    # 1. Episode Reward
-    _plot_single_metric(
-        runs_data   = runs_data,
-        metric_key  = "ep_rewards",
-        ylabel      = "Episode Reward",
-        title       = " Episode Reward Comparison",
-        save_path   = str(save_path / "01_episode_reward.png"),
-        window      = window,
-        target_line = 0,
-        target_label = "Zero Baseline",
+    _plot_metric(
+        runs_data, "ep_rewards",
+        ylabel="Episode Reward",
+        title="Episode Reward Comparison",
+        save_path=str(save_path / "01_reward.png"),
+        smooth_window=smooth_window,
+        n_markers=n_markers,
     )
 
-    # 2. Coverage
-    _plot_single_metric(
-        runs_data    = runs_data,
-        metric_key   = "ep_coverage",
-        ylabel       = "Coverage (%)",
-        title        = "Coverage Rate Comparison",
-        save_path    = str(save_path / "02_coverage.png"),
-        window       = window,
-        target_line  = 70,
-        target_label = "Target 70%",
-        ylim         = (0, 100),
+    _plot_metric(
+        runs_data, "ep_coverage",
+        ylabel="Coverage Rate (%)",
+        title="Coverage Rate Comparison",
+        save_path=str(save_path / "02_coverage.png"),
+        smooth_window=smooth_window,
+        n_markers=n_markers,
+        ylim=(0, 100),
     )
 
-    # 3. Victims Found
-    _plot_single_metric(
-        runs_data    = runs_data,
-        metric_key   = "ep_victims",
-        ylabel       = "Victims Found (%)",
-        title        = " Victims Found Rate Comparison",
-        save_path    = str(save_path / "03_victims_found.png"),
-        window       = window,
-        target_line  = 80,
-        target_label = "Target 80%",
-        ylim         = (0, 100),
+    _plot_metric(
+        runs_data, "ep_victims",
+        ylabel="Victims Found Rate (%)",
+        title="Victims Found Rate Comparison",
+        save_path=str(save_path / "03_victims.png"),
+        smooth_window=smooth_window,
+        n_markers=n_markers,
+        ylim=(0, 100),
     )
 
-    # 4. Episode Length
-    _plot_single_metric(
-        runs_data  = runs_data,
-        metric_key = "ep_lengths",
-        ylabel     = "Steps",
-        title      = " Episode Length Comparison",
-        save_path  = str(save_path / "04_episode_length.png"),
-        window     = window,
+    _plot_metric(
+        runs_data, "ep_lengths",
+        ylabel="Episode Length (Steps)",
+        title="Episode Length Comparison",
+        save_path=str(save_path / "04_length.png"),
+        smooth_window=smooth_window,
+        n_markers=n_markers,
     )
 
-    # 5. Sample Efficiency
-    plot_sample_efficiency(
-        runs_data = runs_data,
-        save_path = str(save_path / "05_sample_efficiency.png"),
-        window    = window,
-    )
-
-    # 6. Summary Table
     plot_summary_table(
-        runs_data = runs_data,
-        save_path = str(save_path / "06_summary_table.png"),
+        runs_data,
+        save_path=str(save_path / "05_summary.png"),
     )
 
-    print(f"\n✅ All plots saved to: {save_path}")
+    print(f"\n✅ Done! All plots in: {save_path}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -344,125 +290,58 @@ def plot_all_metrics(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Plot comparison từ HuggingFace")
-    parser.add_argument(
-        "--runs", nargs="*", default=None,
-        help="Danh sách run_names (mặc định: tất cả runs trên HF)",
-    )
-    parser.add_argument(
-        "--local-dir", type=str, default="./hf_downloads",
-        help="Thư mục lưu file download",
-    )
-    parser.add_argument(
-        "--save-dir", type=str, default="./plots",
-        help="Thư mục lưu plots",
-    )
-    parser.add_argument(
-        "--window", type=int, default=50,
-        help="Smoothing window",
-    )
-    parser.add_argument(
-        "--from-local", action="store_true",
-        help="Đọc metrics từ local (không download lại)",
-    )
-    return parser.parse_args()
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Plot comparison từ HuggingFace")
-    
-    # THÊM: hỗ trợ positional checkpoint paths
-    parser.add_argument(
-        "checkpoints", nargs="*", default=[],
-        help="Đường dẫn checkpoint files (tự động tìm metrics.json trong cùng thư mục)"
-    )
-    
-    parser.add_argument(
-        "--runs", nargs="*", default=None,
-        help="Danh sách run_names (mặc định: tất cả runs trên HF)",
-    )
-    parser.add_argument(
-        "--local-dir", type=str, default="./hf_downloads",
-        help="Thư mục lưu file download",
-    )
-    parser.add_argument(
-        "--save-dir", type=str, default="./plots",
-        help="Thư mục lưu plots",
-    )
-    parser.add_argument(
-        "--window", type=int, default=50,
-        help="Smoothing window",
-    )
-    parser.add_argument(
-        "--from-local", action="store_true",
-        help="Đọc metrics từ local (không download lại)",
-    )
-    return parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("paths", nargs="*", default=[])
+    p.add_argument("--save-dir",      type=str, default="./plots")
+    p.add_argument("--smooth-window", type=int, default=20,
+                   help="Smoothing window (default=20, tăng nếu muốn mượt hơn)")
+    p.add_argument("--n-markers",     type=int, default=15,
+                   help="Số markers trên mỗi đường (default=15)")
+    return p.parse_args()
 
 
 def main():
     args = parse_args()
-    
-    # ── Load metrics ──────────────────────────────────────────────────────
     runs_data: Dict[str, Dict] = {}
 
-    # THÊM: Xử lý checkpoint paths
-    if args.checkpoints:
-        print("📂 Loading from checkpoint directories...")
-        for ckpt_path in args.checkpoints:
-            ckpt_path = Path(ckpt_path)
-            
-            # Tìm metrics.json trong cùng thư mục
-            metrics_file = ckpt_path.parent / "metrics.json"
-            
-            if not metrics_file.exists():
-                print(f"⚠️  Không tìm thấy metrics.json: {metrics_file}")
-                continue
-            
-            run_name = ckpt_path.parent.name
-            with open(metrics_file) as f:
-                runs_data[run_name] = json.load(f)
-            print(f"✅ Loaded: {run_name} ({metrics_file})")
-    
-    elif args.from_local:
-        # Đọc từ local JSON files đã download trước
-        local_dir = Path(args.local_dir)
-        for jf in local_dir.rglob("metrics.json"):
-            run_name = jf.parent.name
-            with open(jf) as f:
-                runs_data[run_name] = json.load(f)
-            print(f"📂 Loaded local: {run_name}")
-    
-    else:
-        # Download từ HF
-        dl = HFDownloader()
-        if args.runs:
-            for run in args.runs:
-                try:
-                    metrics        = dl.download_metrics(run, args.local_dir)
-                    runs_data[run] = metrics
-                    print(f"✅ {run}")
-                except Exception as e:
-                    print(f"⚠️  {run}: {e}")
-        else:
-            runs_data = dl.download_all_metrics(args.local_dir)
-
-    if not runs_data:
-        print("❌ Không có data để plot!")
+    if not args.paths:
+        print("❌ Cần path! Ví dụ:")
+        print("   python plot_compare.py /path/run1 /path/run2")
         return
 
-    print(f"\n📊 Found {len(runs_data)} runs:")
-    for rn in runs_data:
-        algo = _detect_algo(rn)
-        n    = len(runs_data[rn].get("ep_rewards", []))
-        print(f"   {rn:30s} [{algo:6s}] — {n} episodes")
+    print("📂 Loading...")
+    for ps in args.paths:
+        path = Path(ps)
 
-    # ── Plot ──────────────────────────────────────────────────────────────
-    plot_all_metrics(
-        runs_data = runs_data,
-        save_dir  = args.save_dir,
-        window    = args.window,
+        if path.suffix in [".pt", ".pth"]:
+            mf, rn = path.parent / "metrics.json", path.parent.name
+        elif path.name == "metrics.json":
+            mf, rn = path, path.parent.name
+        elif path.is_dir():
+            mf, rn = path / "metrics.json", path.name
+        else:
+            print(f"  ⚠️  Skip: {path}")
+            continue
+
+        if not mf.exists():
+            print(f"  ❌ Not found: {mf}")
+            continue
+
+        with open(mf) as f:
+            runs_data[rn] = json.load(f)
+        print(f"  ✅ {rn} ({len(runs_data[rn].get('ep_rewards', []))} eps)")
+
+    if not runs_data:
+        print("❌ No data!")
+        return
+
+    plot_all(
+        runs_data     = runs_data,
+        save_dir      = args.save_dir,
+        smooth_window = args.smooth_window,
+        n_markers     = args.n_markers,
     )
+
 
 if __name__ == "__main__":
     main()

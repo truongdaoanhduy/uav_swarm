@@ -36,6 +36,7 @@ class ReplayBuffer:
         obs_dim:        int,
         global_obs_dim: int,
         action_dim:     int,
+        seed:           int | None = None,
     ):
         self.capacity       = capacity
         self.n_agents       = n_agents
@@ -45,6 +46,7 @@ class ReplayBuffer:
 
         self.ptr  = 0      # Write pointer
         self.size = 0      # Current number of valid transitions
+        self._rng = np.random.default_rng(seed)
 
         # ── Storage ─────────────────────────────────────────────────────
         self.obs         = np.zeros((capacity, n_agents, obs_dim),    dtype=np.float32)
@@ -108,7 +110,7 @@ class ReplayBuffer:
         assert self.size >= batch_size, (
             f"Buffer has {self.size} < batch_size={batch_size}"
         )
-        idx = np.random.randint(0, self.size, size=batch_size)
+        idx = self._rng.integers(0, self.size, size=batch_size)
 
         return {
             "obs":         self.obs[idx],          # [B, A, obs_dim]
@@ -122,6 +124,9 @@ class ReplayBuffer:
 
     def __len__(self) -> int:
         return self.size
+
+    def set_seed(self, seed: int) -> None:
+        self._rng = np.random.default_rng(seed)
 
     def is_ready(self, min_size: int) -> bool:
         return self.size >= min_size

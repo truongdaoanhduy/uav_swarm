@@ -140,16 +140,12 @@ def env_worker(pipe, config_dict, seed, llm_reward_path=None):
                         if aid in rewards:
                             rewards_array[i] = rewards[aid]
 
-                pipe.send((
-                    last_obs_array.copy(),
-                    last_global_obs.copy(),
-                    rewards_array.copy(),
-                    done,
-                    last_info,
-                ))
-
                 if done:
-                    # ✅ FIX: Auto-reset cũng dùng deterministic seed
+                    terminal_info = last_info
+
+                    # ✅ FIX: Auto-reset trước khi trả obs cho trainer.
+                    # Reward/info vẫn thuộc terminal episode, nhưng obs/global_obs
+                    # là initial state của episode mới để action vòng sau khớp env.
                     obs_new, info_new = env.reset(
                         seed=_episode_seed(episode_count)
                     )
@@ -163,6 +159,22 @@ def env_worker(pipe, config_dict, seed, llm_reward_path=None):
                     if info_new and 'uav_0' in info_new:
                         last_global_obs = info_new['uav_0']['global_obs'].copy()
                         last_info = info_new
+
+                    pipe.send((
+                        last_obs_array.copy(),
+                        last_global_obs.copy(),
+                        rewards_array.copy(),
+                        done,
+                        terminal_info,
+                    ))
+                else:
+                    pipe.send((
+                        last_obs_array.copy(),
+                        last_global_obs.copy(),
+                        rewards_array.copy(),
+                        done,
+                        last_info,
+                    ))
 
             elif cmd == "close":
                 break
