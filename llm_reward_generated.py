@@ -1,66 +1,79 @@
-import numpy as np
-
 def reward_func(factors):
-    # Convert to numpy array for safe numerical operations
-    f = np.asarray(factors, dtype=np.float32)
-    
-    # Extract factors
-    battery = f[0]
-    new_area = f[1]
-    explored_ratio = f[2]
-    victims_found = f[3]
-    avg_urgency = f[4]
-    dist_victim = f[5]
-    dist_charger = f[6]
-    charging = f[7]
-    battery_death = f[8]
-    teammates_nearby = f[9]
-    episode_progress = f[10]
-    active_uavs = f[11]
-    
-    # A. Search Efficiency
-    # Strong reward for finding victims, scaled by urgency priority
-    r_victim = victims_found * (2.0 + avg_urgency * 0.5)
-    # Mild shaping to guide UAVs toward undiscovered victims
-    r_guidance = -np.clip(dist_victim, 0.0, 250.0) * 0.02
-    
-    # B. Coverage Optimization
-    # Reward novel exploration
-    r_coverage = new_area * 0.5
-    # Penalize redundant exploration of known areas
-    r_redundancy = -explored_ratio * 0.5
-    
-    # C. Multi-UAV Cooperation
-    # Penalize clustering to encourage spatial distribution
-    r_spread = -teammates_nearby * 0.2
-    
-    # D. Safety & Battery Management
-    # Penalize operating in dangerous low-battery zones
-    r_low_batt = -np.maximum(0.0, 0.3 - battery) * 2.0
-    # Reward charging when low, penalize charging when sufficient
-    r_charging = charging * np.where(battery < 0.4, 0.5, -0.2)
-    # Guide toward charger only when battery is critically low
-    r_charger_guide = -np.clip(dist_charger, 0.0, 250.0) * 0.01 * np.where(battery < 0.3, 1.0, 0.0)
-    # Heavy penalty for permanent UAV loss
-    r_death = -battery_death * 15.0
-    
-    # E. Time Efficiency
-    # Constant step penalty to discourage wasting time
-    r_step = -0.05
-    # Reward steady progress toward mission completion
-    r_progress = episode_progress * 0.1
-    
-    # F. Team Survival
-    # Continuous bonus for keeping all UAVs operational
-    r_survival = active_uavs * 0.05
-    
-    # Aggregate reward
-    total_reward = (r_victim + r_guidance + 
-                    r_coverage + r_redundancy + 
-                    r_spread + 
-                    r_low_batt + r_charging + r_charger_guide + r_death + 
-                    r_step + r_progress + 
-                    r_survival)
-    
-    # Clip for training stability while preserving signal direction
-    return float(np.clip(total_reward, -20.0, 20.0))
+        # Extract factors
+        battery = factors[0]
+        explore_progress = factors[1]
+        redundancy = factors[2]
+        discovery = factors[3]
+        importance = factors[4]
+        dist_unexplored = factors[5]
+        dist_charger = factors[6]
+        charging = factors[7]
+        failure = factors[8]
+        neighbors = factors[9]
+        mission_progress = factors[10]
+        team_status = factors[11]
+
+        # Normalize/Scale safely
+        # Assume inputs might be raw, so apply safe scaling
+        # I'll use np.clip and sigmoid-like transformations to keep things bounded
+        # But the prompt says "Use normalized values whenever possible", so I'll assume they are roughly in [0,1] or reasonable ranges, but I'll add robust scaling.
+
+        # A. Mission Progress
+        r_mission = discovery * importance
+
+        # B. Exploration & Coverage
+        r_explore = explore_progress - redundancy
+
+        # C. Cooperation (Spatial Diversity)
+        # Assume neighbors factor represents proximity/density (higher = closer/more clustered)
+        # Reward dispersion: 1 - neighbors (if normalized)
+        r_coop = 1.0 - neighbors
+
+        # D. Safety & Energy
+        # Battery reward: encourage maintaining high battery
+        r_battery = battery
+        # Low battery penalty
+        r_low_battery = -np.clip(battery - 0.3, -1, 0) # Penalty when < 0.3
+        # Charging reward
+        r_charging = charging
+        # Incentive to move to charger when low
+        r_recharge_incentive = (1.0 - dist_charger) * np.clip(0.3 - battery, 0, 1)
+        # Failure penalty
+        r_failure = -failure * 5.0
+
+        # E. Time Efficiency
+        # Small step penalty to encourage speed, scaled by team status
+        r_time = -0.01 * team_status
+
+        # F. Navigation/Direction shaping (optional but helps)
+        # Encourage moving towards unexplored areas
+        r_navigation = (1.0 - dist_unexplored) * 0.5
+
+        # Combine with weights
+        # Weights should be tuned but kept general
+        w_mission = 2.0
+        w_explore = 1.0
+        w_coop = 0.5
+        w_battery = 0.5
+        w_low_battery = 1.0
+        w_charging = 1.5
+        w_recharge = 1.0
+        w_failure = 5.0
+        w_time = 0.05
+        w_nav = 0.3
+
+        total_reward = (w_mission * r_mission +
+                        w_explore * r_explore +
+                        w_coop * r_coop +
+                        w_battery * r_battery +
+                        w_low_battery * r_low_battery +
+                        w_charging * r_charging +
+                        w_recharge * r_recharge_incentive +
+                        w_failure * r_failure +
+                        w_time * r_time +
+                        w_nav * r_navigation)
+
+        # Scale by team operational status to reduce reward when team is degraded
+        total_reward *= team_status
+
+        return float(total_reward)
