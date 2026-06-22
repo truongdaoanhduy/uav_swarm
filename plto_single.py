@@ -13,14 +13,8 @@ from typing import Dict, List
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RUN_COLORS = {
-    "masac_reward_base_new_1": "#E53935",  # Red
-    "masac_reward_base_new_2": "#1E88E5",  # Blue
-    "masac_reward_llm_new_1": "#43A047",  # Red
-    "masac_reward_llm_new_2": "#FB8C00",  # Blue
-    "masac_reward_llm_3.6_new_1": "#BF2EAE",  # Red
-    "masac_reward_llm_3.6_new_2": "#EAFB00",  # Blue
-    "masac_reward_llm_3.6_elsiver_new_1": "#1CD5F6",  # Red
-    "masac_reward_llm_3.6_elsiver_new_2": "#B0FB00",  # Blue
+    "masac_reward_baseline": "#E53935",  # Red
+    
 }
 
 PALETTE = [
