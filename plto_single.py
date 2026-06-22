@@ -19,6 +19,8 @@ RUN_COLORS = {
     "masac_reward_llm_new_2": "#FB8C00",  # Blue
     "masac_reward_llm_3.6_new_1": "#BF2EAE",  # Red
     "masac_reward_llm_3.6_new_2": "#EAFB00",  # Blue
+    "masac_reward_llm_3.6_elsiver_new_1": "#1CD5F6",  # Red
+    "masac_reward_llm_3.6_elsiver_new_2": "#B0FB00",  # Blue
 }
 
 PALETTE = [
@@ -28,7 +30,8 @@ PALETTE = [
     "#FB8C00",  # Orange
     "#BF2EAE",  # Purple
     "#EAFB00",  # Cyan
-    
+    "#1CD5F6"
+    "#B0FB00"
 ]
 
 LABEL_MAP = {
