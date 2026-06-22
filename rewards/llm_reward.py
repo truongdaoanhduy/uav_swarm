@@ -151,7 +151,7 @@ class LLMReward:
 
         # factors[2]: vùng 30m quanh UAV đã scan bao nhiêu
         local_cov = float(
-            coverage_map.get_local_coverage(uav.pos, 30.0)
+            coverage_map.get_local_coverage(uav.pos, 10.0)
         )
 
         # factors[3]: số victim tìm thấy step này

@@ -14,7 +14,7 @@ from typing import Dict, List
 # ── Colors ───────────────────────────────────────────────────────────────────
 RUN_COLORS = {
     "masac_reward_baseline": "#E53935",  # Red
-    
+    "masac_reward_llm_3.6_claude_prompt_new": "#1E88E5",
 }
 
 PALETTE = [
