@@ -185,6 +185,55 @@ class CoverageMap:
 
     # ─── Query - Temporal ────────────────────────────────────────────────────
 
+    def get_neighbor_coverage(
+        self,
+        pos:    np.ndarray,
+        radius: float = 20.0,
+    ) -> float:
+        """
+        Tính coverage trung bình trong bán kính `radius` quanh vị trí `pos`.
+        
+        Purpose:
+            Detect vùng đã được explore nhiều → repulsion signal cho LLM reward.
+            High neighbor_coverage = vùng đã scan kỹ → UAV nên đi chỗ khác.
+        
+        Khác với get_local_coverage():
+            - get_local_coverage:   Coverage trong FOV của UAV (thường 15m)
+            - get_neighbor_coverage: Coverage vùng xung quanh rộng hơn (20m)
+                                     để detect "already explored area"
+        
+        Args:
+            pos:    [x, y, z] position (chỉ dùng x, y)
+            radius: Bán kính tính toán (meters), default 20.0
+        
+        Returns:
+            float: 0.0-1.0, coverage ratio trong vùng
+                   0.0 = vùng chưa explore (UAV nên đến đây)
+                   1.0 = vùng đã scan hoàn toàn (UAV nên tránh)
+        
+        Usage (in LLM reward):
+            >>> neighbor_cov = coverage_map.get_neighbor_coverage(uav.pos, 20.0)
+            >>> if neighbor_cov > 0.8:
+            ...     # Vùng này đã explore kỹ → giảm coverage reward
+            ...     coverage_reward *= 0.5
+        """
+        cells = get_circle_cells(
+            center=pos[:2],
+            radius=radius,
+            grid_size=self.grid_size,
+            map_size=self.map_size,
+        )
+        
+        if len(cells) == 0:
+            return 0.0
+        
+        # Đếm số ô đã explore trong vùng
+        explored = np.sum(self.grid[cells[:, 0], cells[:, 1]])
+        
+        # Return coverage ratio
+        return float(explored / len(cells))
+
+
     def get_staleness(
         self,
         pos:          np.ndarray,
