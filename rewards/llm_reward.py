@@ -8,8 +8,6 @@ class LLMReward:
     """
     Wrap reward function do LLM sinh ra.
     Interface giống BaselineReward để env gọi được.
-    
-    VERSION: 18 factors (bổ sung urgency + exploration tracking)
     """
 
     def __init__(self, fn, cfg):
@@ -19,26 +17,13 @@ class LLMReward:
         """
         self._fn  = fn
         self._cfg = cfg
-        
-        # ── Tracking state per episode ──────────────────────────────────
         self._dead_penalized = set()  # Tránh penalty battery death 2 lần
-        self._prev_local_cov = {}     # Track local coverage change
-        self._idle_steps     = {}     # Track consecutive no-progress steps
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # RESET
-    # ══════════════════════════════════════════════════════════════════════════
-    
+    # ── Gọi đầu mỗi episode ──────────────────────────────────
     def reset(self):
-        """Reset per-episode tracking state."""
         self._dead_penalized.clear()
-        self._prev_local_cov.clear()
-        self._idle_steps.clear()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # COMPUTE PER UAV (Main Interface)
-    # ══════════════════════════════════════════════════════════════════════════
-    
+    # ── Interface chính - env gọi cái này ────────────────────
     def compute_per_uav(
         self,
         uav,
@@ -53,33 +38,21 @@ class LLMReward:
         done,
         stations=None,
     ) -> dict:
-        """
-        Tính reward cho 1 UAV. Trả về dict có key 'total'.
-        
-        Flow:
-            1. Check UAV state
-            2. Build 18 factors
-            3. Call LLM function
-            4. Clip & return
-        """
+        """Tính reward cho 1 UAV. Trả về dict có key 'total'."""
+
         # UAV disabled → không tính
         if uav.state == UAVState.DISABLED:
             return {"total": 0.0}
 
-        # ── Step 1: Build factors ────────────────────────────────────────
+        # Bước 1: Chuyển objects → list số
         factors = self._build_factors(
-            uav                = uav,
-            newly_found_by_uav = newly_found_by_uav,
-            uavs               = uavs,
-            victims            = victims,
-            coverage_map       = coverage_map,
-            prev_coverage      = prev_coverage,
-            current_step       = current_step,
-            max_steps          = self._cfg.env.max_steps,
-            stations           = stations,
+            uav, newly_found_by_uav, uavs,
+            victims, coverage_map,
+            prev_coverage, current_step,
+            self._cfg.env.max_steps, stations
         )
 
-        # ── Step 2: Call LLM function ────────────────────────────────────
+        # Bước 2: Gọi fn LLM
         try:
             reward = float(self._fn(factors))
             reward = float(np.clip(reward, -200.0, 200.0))
@@ -89,10 +62,9 @@ class LLMReward:
 
         return {"total": reward}
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # COMPUTE GLOBAL (for logging)
-    # ══════════════════════════════════════════════════════════════════════════
-    
+    # ── Chuyển objects → list số ─────────────────────────────
+    # rewards/llm_reward.py — thêm vào class LLMReward
+
     def compute(
         self,
         uavs,
@@ -113,14 +85,13 @@ class LLMReward:
         if not uavs:
             return {"total": 0.0}
 
-        total     = 0.0
+        total = 0.0
         n_counted = 0
 
         for uav in uavs:
             if uav.state == UAVState.DISABLED:
                 continue
 
-            # Filter victims found by this UAV
             newly_found_by_uav = [
                 v for v in newly_found if v.found_by_uav == uav.id
             ]
@@ -144,18 +115,15 @@ class LLMReward:
         mean_reward = total / max(n_counted, 1)
 
         return {
-            "total":  mean_reward,
-            "n_uavs": n_counted,
+            "total":   mean_reward,
+            "n_uavs":  n_counted,
         }
 
     def summarize(self, breakdown: dict) -> str:
         """Log summary."""
         return f"llm_total={breakdown.get('total', 0):.2f}"
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # BUILD FACTORS - 18 FACTORS
-    # ══════════════════════════════════════════════════════════════════════════
-    
+
     def _build_factors(
         self,
         uav,
@@ -169,58 +137,33 @@ class LLMReward:
         stations,
     ) -> list:
         """
-        Chuyển tất cả objects từ env sang list 18 số.
-        
-        FACTORS (18 total):
-        ───────────────────────────────────────────────────────────────
-        [0]  battery_pct          : Current battery % (0-100)
-        [1]  coverage_delta       : Global coverage increase this step (0-1)
-        [2]  local_cov            : Coverage within 30m of UAV (0-1)
-        [3]  n_found              : Number of victims found THIS STEP
-        [4]  avg_urgency          : Average urgency of victims found (0-5)
-        [5]  dist_unfound         : Distance to nearest unfound victim (m)
-        [6]  dist_station         : Distance to nearest charging station (m)
-        [7]  is_charging          : 1.0 if charging, else 0.0
-        [8]  is_dead              : 1.0 if battery died THIS STEP, else 0.0
-        [9]  n_nearby             : Number of teammates within 30m
-        [10] time_ratio           : Episode progress (0=start, 1=end)
-        [11] n_active             : Number of active UAVs
-        ───────────────────────────────────────────────────────────────
-        NEW FACTORS (urgency + exploration tracking):
-        ───────────────────────────────────────────────────────────────
-        [12] high_urgency_unfound : Count of urgency≥4 victims not found
-        [13] dist_high_urgency    : Distance to nearest urgency≥4 victim (m)
-        [14] local_cov_delta      : Coverage increase in 30m radius this step
-        [15] idle_steps           : Consecutive steps without progress
-        [16] high_urgency_ratio   : % of urgency≥4 victims found (0-1)
-        [17] neighbor_coverage    : Avg coverage of 20m neighbors (0-1)
-        ───────────────────────────────────────────────────────────────
+        Đây là bước quan trọng nhất.
+        Chuyển tất cả objects từ env sang list 12 số
+        để fn LLM hiểu được.
         """
-        
-        # ══════════════════════════════════════════════════════════════════
-        # ORIGINAL 12 FACTORS (unchanged)
-        # ══════════════════════════════════════════════════════════════════
-        
-        # [0] battery_pct
+
+        # factors[0]: battery hiện tại
         battery_pct = float(uav.battery_pct)
 
-        # [1] coverage_delta
-        cur_cov        = coverage_map.get_coverage_rate()
+        # factors[1]: diện tích mới khám phá step này
+        cur_cov = coverage_map.get_coverage_rate()
         coverage_delta = float(max(0.0, cur_cov - prev_coverage))
 
-        # [2] local_cov
-        local_cov = float(coverage_map.get_local_coverage(uav.pos, 30.0))
+        # factors[2]: vùng 30m quanh UAV đã scan bao nhiêu
+        local_cov = float(
+            coverage_map.get_local_coverage(uav.pos, 30.0)
+        )
 
-        # [3] n_found
+        # factors[3]: số victim tìm thấy step này
         n_found = len(newly_found_by_uav)
 
-        # [4] avg_urgency
+        # factors[4]: urgency trung bình của victim vừa tìm
         avg_urgency = (
             sum(v.urgency for v in newly_found_by_uav) / n_found
             if n_found > 0 else 0.0
         )
 
-        # [5] dist_unfound
+        # factors[5]: khoảng cách đến victim chưa tìm gần nhất
         unfound = [v for v in victims if not v.is_found]
         if unfound:
             dist_unfound = float(min(
@@ -228,9 +171,9 @@ class LLMReward:
                 for v in unfound
             ))
         else:
-            dist_unfound = 353.0  # sqrt(500^2 + 500^2) ≈ 707, use 353 as half
+            dist_unfound = 353.0  # Không còn victim
 
-        # [6] dist_station
+        # factors[6]: khoảng cách đến trạm sạc gần nhất
         if stations:
             dist_station = float(min(
                 np.linalg.norm(uav.pos[:2] - s.pos[:2])
@@ -239,17 +182,17 @@ class LLMReward:
         else:
             dist_station = 353.0
 
-        # [7] is_charging
+        # factors[7]: đang sạc không
         is_charging = 1.0 if uav.state == UAVState.CHARGING else 0.0
 
-        # [8] is_dead (one-time)
+        # factors[8]: battery vừa chết step này (one-time)
         if uav.battery_death and uav.id not in self._dead_penalized:
             is_dead = 1.0
             self._dead_penalized.add(uav.id)
         else:
             is_dead = 0.0
 
-        # [9] n_nearby
+        # factors[9]: số teammate trong 30m
         active = [u for u in uavs if u.state != UAVState.DISABLED]
         n_nearby = float(sum(
             1 for u in active
@@ -257,109 +200,35 @@ class LLMReward:
             and np.linalg.norm(uav.pos[:2] - u.pos[:2]) <= 30.0
         ))
 
-        # [10] time_ratio
+        # factors[10]: tiến độ episode (0=đầu, 1=cuối)
         time_ratio = float(current_step) / float(max(max_steps, 1))
 
-        # [11] n_active
+        # factors[11]: số UAV còn hoạt động
         n_active = float(len(active))
 
-        # ══════════════════════════════════════════════════════════════════
-        # NEW FACTORS (12-17)
-        # ══════════════════════════════════════════════════════════════════
-        
-        # [12] high_urgency_unfound
-        # Đếm số victim có urgency ≥ 4 chưa tìm thấy
-        high_urgency_unfound = float(sum(
-            1 for v in victims 
-            if not v.is_found and v.urgency >= 4
-        ))
-
-        # [13] dist_high_urgency
-        # Khoảng cách đến victim urgency ≥ 4 gần nhất
-        high_urgency_victims = [
-            v for v in victims 
-            if not v.is_found and v.urgency >= 4
-        ]
-        if high_urgency_victims:
-            dist_high_urgency = float(min(
-                np.linalg.norm(uav.pos[:2] - v.pos[:2])
-                for v in high_urgency_victims
-            ))
-        else:
-            dist_high_urgency = 353.0  # Không còn victim urgency cao
-
-        # [14] local_cov_delta
-        # Coverage tăng trong vùng 30m (detect local exploration)
-        prev_local = self._prev_local_cov.get(uav.id, local_cov)
-        local_cov_delta = float(max(0.0, local_cov - prev_local))
-        self._prev_local_cov[uav.id] = local_cov
-
-        # [15] idle_steps
-        # Số bước liên tiếp KHÔNG có tiến triển (no victim + no coverage)
-        # CRITICAL: Đây là key factor để prevent hovering/wasting time
-        has_progress = (n_found > 0) or (coverage_delta > 0.001)
-        
-        if not has_progress:
-            self._idle_steps[uav.id] = self._idle_steps.get(uav.id, 0) + 1
-        else:
-            self._idle_steps[uav.id] = 0
-        
-        idle_steps = float(self._idle_steps.get(uav.id, 0))
-
-        # [16] high_urgency_ratio
-        # % victim urgency ≥ 4 đã tìm thấy (task progress metric)
-        total_high_urgency = max(
-            sum(1 for v in victims if v.urgency >= 4), 
-            1  # Avoid division by zero
-        )
-        found_high_urgency = sum(
-            1 for v in victims 
-            if v.is_found and v.urgency >= 4
-        )
-        high_urgency_ratio = float(found_high_urgency / total_high_urgency)
-
-        # [17] neighbor_coverage
-        # Coverage trung bình vùng xung quanh (repulsion từ explored areas)
-        neighbor_coverage = float(
-            coverage_map.get_neighbor_coverage(uav.pos, radius=20.0)
-        )
-
-        # ══════════════════════════════════════════════════════════════════
-        # RETURN 18 FACTORS
-        # ══════════════════════════════════════════════════════════════════
-        
         return [
-            battery_pct,           # [0]
-            coverage_delta,        # [1]
-            local_cov,             # [2]
-            float(n_found),        # [3]
-            float(avg_urgency),    # [4]
-            dist_unfound,          # [5]
-            dist_station,          # [6]
-            is_charging,           # [7]
-            is_dead,               # [8]
-            n_nearby,              # [9]
-            time_ratio,            # [10]
-            n_active,              # [11]
-            # ── NEW ──
-            high_urgency_unfound,  # [12]
-            dist_high_urgency,     # [13]
-            local_cov_delta,       # [14]
-            idle_steps,            # [15]
-            high_urgency_ratio,    # [16]
-            neighbor_coverage,     # [17]
+            battery_pct,        # [0]
+            coverage_delta,     # [1]
+            local_cov,          # [2]
+            float(n_found),     # [3]
+            float(avg_urgency), # [4]
+            dist_unfound,       # [5]
+            dist_station,       # [6]
+            is_charging,        # [7]
+            is_dead,            # [8]
+            n_nearby,           # [9]
+            time_ratio,         # [10]
+            n_active,           # [11]
         ]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LOAD FUNCTION
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Load fn từ file đã lưu ───────────────────────────────────
 
 def load_llm_reward(filepath: str, cfg) -> "LLMReward":
     """
     Load LLMReward từ file code đã lưu.
     
-    Usage:
+    Dùng:
         reward = load_llm_reward("llm_reward_generated.py", cfg)
         reward.compute_per_uav(uav, ...)
     """
