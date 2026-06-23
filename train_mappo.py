@@ -34,7 +34,7 @@ class AutoConfig:
 
 def auto_compute_config(
     max_steps, n_envs, n_uav,
-    batch_size_hint=None, safety_factor=0.6
+    batch_size_hint=None, safety_factor=1
 ):
     min_rollout = int(max_steps * safety_factor)
     rollout_length = ((min_rollout + 63) // 64) * 64
@@ -68,7 +68,7 @@ def parse_args():
     parser.add_argument("--max-steps",            type=int,   default=None)
     parser.add_argument("--map-size",             type=int,   default=None)
     parser.add_argument("--batch-size",           type=int,   default=None)
-    parser.add_argument("--safety-factor",        type=float, default=0.6)
+    parser.add_argument("--safety-factor",        type=float, default=1)
     parser.add_argument("--n-epochs",             type=int,   default=None)
     parser.add_argument("--lr-actor",             type=float, default=None)
     parser.add_argument("--lr-critic",            type=float, default=None)
@@ -118,7 +118,7 @@ def main():
     if args.n_epochs:
         cfg.train.mappo_n_epochs = args.n_epochs
     else:
-        cfg.train.mappo_n_epochs = 50  # ← 8 → 40 (tăng 5×)
+        cfg.train.mappo_n_epochs = 40  # ← 8 → 40 (tăng 5×)
 
     # if args.n_epochs:   cfg.train.mappo_n_epochs   = args.n_epochs
     if args.lr_actor:   cfg.train.mappo_lr_actor   = args.lr_actor
