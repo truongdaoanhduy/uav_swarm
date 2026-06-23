@@ -13,9 +13,8 @@ from typing import Dict, List
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RUN_COLORS = {
-    "masac_reward_baseline": "#E53935",  # Red
-    "masac_reward_llm_3.6_claude_prompt_new": "#1E88E5",
-    "masac_reward_llm_3.6_qwen_prompt_new": "#FB8C00",
+    "masac_reward_baseline_5000step": "#E53935",  # Red
+    "masac_reward_llm_3.6_qwen_prompt_5000step_new": "#1E88E5",
     
 }
 
@@ -142,7 +141,6 @@ def _plot_metric(
             linestyle='--',
             linewidth=1.5,
             alpha=0.6,
-            label=target_label or f"Target {target_line}",
             zorder=1,
         )
 
@@ -261,8 +259,7 @@ def plot_all(
         save_path=str(save_path / "02_coverage.png"),
         smooth_window=smooth_window,
         n_markers=n_markers,
-        target_line=80,
-        target_label="Target 80%",
+  
         ylim=(0, 100),
     )
 
@@ -273,8 +270,6 @@ def plot_all(
         save_path=str(save_path / "03_victims.png"),
         smooth_window=smooth_window,
         n_markers=n_markers,
-        target_line=80,
-        target_label="Target 80%",
         ylim=(0, 100),
     )
 
