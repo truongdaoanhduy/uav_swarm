@@ -13,15 +13,47 @@ from config import AppConfig, STAGE_HARD
 from training.algorithms.mappo.trainer import MAPPOTrainer
 
 
-def set_seed(seed):
+def set_seed(seed: int) -> None:
+    """
+    ✅ FIX: Set seed đầy đủ và đúng thứ tự (GIỐNG HỆT MASAC).
+    
+    Thứ tự quan trọng:
+        1. CUBLAS env var TRƯỚC khi import torch (hoặc ít nhất trước cuda ops)
+        2. Python random
+        3. NumPy  
+        4. PyTorch CPU
+        5. PyTorch CUDA
+        6. CUDNN flags
+        7. use_deterministic_algorithms CUỐI CÙNG
+    """
+    # ✅ 1. Env vars TRƯỚC
+    os.environ["PYTHONHASHSEED"]          = str(seed)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # ← ":16:8" có thể thiếu bộ nhớ
+
+    # ✅ 2. Python random
     random.seed(seed)
+
+    # ✅ 3. NumPy
     np.random.seed(seed)
+
+    # ✅ 4. PyTorch
     torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+    # ✅ 5. CUDNN - benchmark=False BẮT BUỘC cho reproducibility
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True)
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    torch.backends.cudnn.benchmark     = False  # ← True sẽ chọn algo khác nhau mỗi lần
+
+    # ✅ 6. Deterministic algorithms - warn_only thay vì try/except
+    # warn_only=True: warning thay vì crash khi gặp non-deterministic op
+    # Không dùng try/except vì nó che giấu lỗi thật
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
+    print(f"[Seed] ✅ seed={seed} set toàn diện")
+    print(f"[Seed]    PYTHONHASHSEED={os.environ['PYTHONHASHSEED']}")
+    print(f"[Seed]    CUBLAS={os.environ['CUBLAS_WORKSPACE_CONFIG']}")
+    print(f"[Seed]    cudnn.benchmark=False, deterministic=True")
 
 
 @dataclass
@@ -87,6 +119,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    
+    # ✅ FIX: set_seed TRƯỚC MỌI THỨ KHÁC
     set_seed(args.seed)
 
     # ── Device ───────────────────────────────────────────────────────────────
@@ -99,6 +133,10 @@ def main():
     cfg = AppConfig()
     cfg.apply_stage(STAGE_HARD)
     cfg.env.n_uav = 4
+
+    # ✅ FIX: Ghi seed vào config để tất cả components dùng chung
+    cfg.env.global_seed = args.seed  # ← base_env dùng để tính episode seeds
+    cfg.env.eval_seed   = args.seed  # ← eval mode dùng
 
     if args.max_steps:
         cfg.env.max_steps = args.max_steps
@@ -114,25 +152,20 @@ def main():
     cfg.train.mappo_rollout_length = auto_cfg.rollout_length
     cfg.train.mappo_batch_size     = auto_cfg.batch_size
 
-    # ✅ SỬA CHỖ NÀY:
     if args.n_epochs:
         cfg.train.mappo_n_epochs = args.n_epochs
     else:
-        cfg.train.mappo_n_epochs = 40  # ← 8 → 40 (tăng 5×)
+        cfg.train.mappo_n_epochs = 40
 
-    # if args.n_epochs:   cfg.train.mappo_n_epochs   = args.n_epochs
     if args.lr_actor:   cfg.train.mappo_lr_actor   = args.lr_actor
     if args.lr_critic:  cfg.train.mappo_lr_critic  = args.lr_critic
 
     # ── Run name + HF ────────────────────────────────────────────────────────
-    # ✅ FIX: Định nghĩa TRƯỚC khi dùng
     run_name  = args.run_name or f"mappo_s{args.seed}"
     HF_TOKEN  = args.hf_token or os.getenv("HF_TOKEN")
     HF_REPO   = "duy95/sar-uav-results"
 
     # ── LLM Reward path ──────────────────────────────────────────────────────
-    # ✅ FIX: Chỉ giữ PATH (string), không load object ở đây
-    #         Object sẽ được load BÊN TRONG worker process (safe với spawn)
     llm_reward_path = args.llm_reward
 
     if llm_reward_path:
@@ -152,13 +185,15 @@ def main():
 
     print(f"{'='*70}")
     print(f"🚁 MAPPO TRAINING — HARD STAGE")
-    print(f"   Reward: {'LLM' if llm_reward_path else 'Baseline v4.0'}")
     print(f"{'='*70}")
     print(f"ENVIRONMENT:")
     print(f"  Map Size:            {cfg.env.map_size}×{cfg.env.map_size}m")
     print(f"  Max Steps:           {cfg.env.max_steps}")
     print(f"  n_envs:              {args.n_envs}")
     print(f"  n_uav:               {cfg.env.n_uav}")
+    print(f"  seed:                {args.seed}")
+    print(f"  device:              {device}")
+    print(f"  run_name:            {run_name}")
     print(f"  Victims:             {cfg.victim.n_victims_min}-{cfg.victim.n_victims_max}")
     print(f"  Debris:              {cfg.obstacle.n_debris}")
     print(f"")
@@ -174,7 +209,6 @@ def main():
     print(f"  Episodes/Update:     ~{eps_per_update:.1f}")
     print(f"  n_epochs:            {cfg.train.mappo_n_epochs}")
     print(f"  LR (actor/critic):   {cfg.train.mappo_lr_actor}/{cfg.train.mappo_lr_critic}")
-    print(f"  Device:              {device}")
     print(f"")
     print(f"LOGGING:")
     print(f"  Log interval:        {args.log_interval} episodes")
@@ -185,19 +219,22 @@ def main():
     print(f"{'='*70}\n")
 
     # ── Sanity checks ────────────────────────────────────────────────────────
-    assert auto_cfg.rollout_length >= cfg.env.max_steps, \
-        f"Rollout {auto_cfg.rollout_length} < max_steps {cfg.env.max_steps}"
+    if auto_cfg.rollout_length < cfg.env.max_steps:
+        print(f"\n⚠️  WARNING: rollout ({auto_cfg.rollout_length}) "
+              f"< max_steps ({cfg.env.max_steps})")
+        print(f"   Episodes span nhiều rollouts → update thường hơn")
+        print(f"   Increase --safety-factor nếu cần rollout dài hơn\n")
+    
     assert auto_cfg.buffer_capacity >= cfg.env.max_steps * args.n_envs, \
-        "Buffer too small"
+        f"Buffer too small: {auto_cfg.buffer_capacity} < {cfg.env.max_steps}×{args.n_envs}"
 
     # ── Create Trainer ───────────────────────────────────────────────────────
-    # ✅ FIX: Chỉ tạo 1 lần, truyền llm_reward_path
     trainer = MAPPOTrainer(
         config          = cfg,
         device          = device,
         run_name        = run_name,
         n_envs          = args.n_envs,
-        llm_reward_path = llm_reward_path,                      # ← PATH thay vì object
+        llm_reward_path = llm_reward_path,
         hf_token        = HF_TOKEN if args.hf_upload else None,
         hf_repo         = HF_REPO  if args.hf_upload else None,
         hf_upload_every = args.hf_upload_every,
@@ -214,13 +251,13 @@ def main():
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print(f"\n{'='*70}")
-    print(f"✅ TRAINING COMPLETE")
+    print(f"✅ MAPPO TRAINING COMPLETE")
     print(f"{'='*70}")
     print(f"  Episodes:  {trainer.total_episodes_done:,}")
-    print(f"  Steps:     {trainer.total_steps:,}")
     print(f"  Updates:   {trainer.update_count:,}")
+    print(f"  Steps:     {trainer.total_steps:,}")
     if trainer.ep_rewards:
-        print(f"  Reward:    {np.mean(trainer.ep_rewards):.2f} ± {np.std(trainer.ep_rewards):.2f}")
+        print(f"  Reward:    {np.mean(trainer.ep_rewards):+.2f} ± {np.std(trainer.ep_rewards):.2f}")
         print(f"  Coverage:  {np.mean(trainer.ep_coverage):.1f}%")
         print(f"  Victims:   {np.mean(trainer.ep_victims):.1f}%")
     print(f"{'='*70}\n")

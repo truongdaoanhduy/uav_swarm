@@ -25,14 +25,12 @@ from config.curriculum_config import STAGE_HARD, STAGE_TRANSFER, STAGE_EXTREME
 BASE_OUTPUT_DIR = Path("results/viz")
 
 STAGE_MAP = {
-    "transfer": STAGE_TRANSFER,
-    "extreme":  STAGE_EXTREME,
+    "hard": STAGE_HARD,
 }
 
 ALGO_COLORS = {
     "mappo": "#2196F3",
     "masac": "#4CAF50",
-    "matd3": "#FF9800",
 }
 
 
@@ -49,11 +47,12 @@ def parse_args():
     p.add_argument("--mappo", type=str, default=None)
     p.add_argument("--masac", type=str, default=None)
     p.add_argument("--matd3", type=str, default=None)
-
+    p.add_argument("--run-name", type=str, default=None,
+                   help="Tên variant (vd: baseline, llm_reward) để phân biệt trên HF")
     p.add_argument(
         "--stages", nargs="+",
-        default=["transfer", "extreme"],
-        choices=["transfer", "extreme"],
+        default=["hard"],
+        choices=["hard"],
     )
 
     p.add_argument("--mode",       type=str, default="2d",
@@ -87,10 +86,11 @@ class VizHFUploader:
     Không queue, không batch — upload 1 file = 1 commit.
     """
 
-    def __init__(self, token: str, repo_id: str, timestamp: str):
+    def __init__(self, token: str, repo_id: str, timestamp: str,run_name: Optional[str] = None):
         self.token     = token
         self.repo_id   = repo_id
         self.timestamp = timestamp  # dùng làm folder name trong HF
+        self.run_name  = run_name
         self._api      = None
         self._init()
 
@@ -142,33 +142,14 @@ class VizHFUploader:
         result:     dict,
         run_dir:    Path,
     ) -> bool:
-        """
-        Upload kết quả của 1 (algo × stage) NGAY sau khi chạy xong.
-
-        Upload:
-            1. GIF animation
-            2. Last frame PNG
-            3. result.json (metrics)
-
-        Cấu trúc HF:
-            visualizations/
-            ├── {timestamp}/
-            │   ├── transfer/
-            │   │   ├── mappo.gif
-            │   │   ├── mappo_last.png
-            │   │   ├── mappo_result.json
-            │   │   ├── masac.gif  ← upload ngay sau khi masac xong
-            │   │   └── ...
-            │   └── extreme/
-            │       └── ...
-            └── latest/
-                ├── transfer_mappo.gif   ← overwrite
-                └── ...
-        """
-        key     = f"{algo}_{stage}"
-        base_ts = f"visualizations/{self.timestamp}/{stage}"
-        base_lt = f"visualizations/latest"
-
+        if self.run_name:
+            base_ts = f"visualizations/{self.run_name}/{stage}"
+            base_lt = f"visualizations/latest/{self.run_name}"
+        else:
+            base_ts = f"visualizations/{self.timestamp}/{stage}"
+            base_lt = f"visualizations/latest"
+        
+        key = f"{algo}_{stage}"
         print(f"\n  📤 Uploading {algo.upper()}×{stage.upper()} → HF...")
 
         uploaded = 0
@@ -182,7 +163,6 @@ class VizHFUploader:
                 f"{base_ts}/{algo}.gif",
                 f"GIF {algo.upper()} on {stage.upper()}",
             )
-            # latest/ (overwrite mỗi lần)
             self._upload_one(
                 str(gif_path),
                 f"{base_lt}/{key}.gif",
@@ -230,7 +210,10 @@ class VizHFUploader:
         """Upload summary plot + meta.json sau khi tất cả xong."""
         print(f"\n  📤 Uploading final summary → HF...")
 
-        base_ts = f"visualizations/{self.timestamp}"
+        if self.run_name:
+            base_ts = f"visualizations/{self.run_name}"
+        else:
+            base_ts = f"visualizations/{self.timestamp}"
 
         # Summary plot
         if summary_path and summary_path.exists():
@@ -255,8 +238,9 @@ class VizHFUploader:
             "Run metadata",
         )
 
-        print(f"  🔗 https://huggingface.co/datasets/{self.repo_id}"
-              f"/tree/main/visualizations/{self.timestamp}")
+        link = f"https://huggingface.co/datasets/{self.repo_id}/tree/main/visualizations/"
+        link += self.run_name if self.run_name else self.timestamp
+        print(f"  🔗 {link}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -664,7 +648,7 @@ def main():
     device = (
         "cuda" if torch.cuda.is_available() else "cpu"
     ) if args.device == "auto" else args.device
-
+   
     # ── Checkpoints ───────────────────────────────────────────────────────────
     raw_ckpts = {
         "mappo": args.mappo,
@@ -695,10 +679,9 @@ def main():
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     uploader  = None
     if hf_token and args.hf_repo and not args.no_upload:
-        uploader = VizHFUploader(hf_token, args.hf_repo, timestamp)
+        uploader = VizHFUploader(hf_token, args.hf_repo, timestamp, args.run_name)
     else:
         print("  ℹ️  Không upload HF")
-
     # ── Output dir ────────────────────────────────────────────────────────────
     algo_label  = "_".join(checkpoints.keys())
     stage_label = "_".join(stages)
