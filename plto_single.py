@@ -15,8 +15,9 @@ from typing import Dict, List
 RUN_COLORS = {
     # "masac_reward_baseline_5000step": "#E53935",  # Red
     # "masac_reward_llm_3.6_qwen_prompt_5000step_new": "#1E88E5",
-    'mappo_reward_baseline_100ep_step':"#BF2EAE",
-    'mappo_reward_llm_3.6_qwen_prompt_5000step_new':'#FB8C00'
+    'masac_reward_baseline_100ep_step':"#BF2EAE",
+    'masac_reward_llm_3.6_qwen_prompt_5000step_new':'#FB8C00',
+    'masac_reward_llm_improve':"#1CD5F6",
 }
 
 PALETTE = [

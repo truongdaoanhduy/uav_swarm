@@ -1,3 +1,4 @@
+import numpy as np
 # def reward_func(factors):
 #     # factors[0]: battery percentage. Used for survival and charging decisions.
 #     battery = factors[0]
@@ -83,54 +84,67 @@
 #     return float(reward)
 
 
-import numpy as np 
+
 def reward_func(factors):
-       # factors[0]: current_coverage_ratio (0-1)
-       # factors[1]: new_coverage_this_step (0-1)
-       # factors[2]: dist_to_nearest_victim (float)
-       # factors[3]: victims_discovered_this_step (float, cumulative or step)
-       # factors[4]: battery_level (0-1)
-       # factors[5]: is_charging (0 or 1)
-       # factors[6]: dist_to_charger (float)
-       # factors[7]: team_overlap_ratio (0-1)
-       # factors[8]: battery_death_flag (0 or 1)
-       # factors[9]: clustering_metric (0-1, higher = worse)
-       # factors[10]: dist_to_zone_center (float)
-       # factors[11]: collision_risk (0-1)
+        battery = factors[0]
+        new_coverage = factors[1]
+        explored_ratio = factors[2]
+        victims_found = factors[3]
+        urgency = factors[4]
+        dist_to_victim = factors[5]
+        dist_to_charger = factors[6]
+        charging_state = factors[7]
+        battery_death = factors[8]
+        nearby_teammates = factors[9]
+        episode_progress = factors[10]
+        active_uavs = factors[11]
 
-       # 1. Coverage & Search Progress
-       r_coverage = np.clip(factors[0], 0.0, 1.0) * 0.2
-       r_new_cov = np.clip(factors[1], 0.0, 1.0)
+        reward = 0.0
 
-       # 2. Victim Discovery & Proximity
-       r_victim_disc = np.clip(factors[3], 0.0, 1.0)
-       r_victim_dist = np.clip(1.0 - factors[2] / 50.0, -1.0, 1.0)
+        # 1. Victim Discovery & Urgency (Priority 1)
+        reward += victims_found * 10.0
+        reward += urgency * 5.0
 
-       # 3. Battery & Charging Management
-       r_battery = np.clip(factors[4], 0.0, 1.0) * 0.1
-       r_charging = np.clip(factors[5] * (1.0 if factors[4] < 0.3 else 0.0), 0.0, 1.0)
-       r_charger_dist = np.clip((1.0 - factors[6] / 50.0) * (1.0 if factors[4] < 0.3 else 0.0), -1.0, 1.0)
-       r_death = -np.clip(factors[8], 0.0, 1.0)
+        # 2. Coverage & Exploration (Priority 2)
+        reward += new_coverage * 8.0
+        reward -= explored_ratio * 3.0
 
-       # 4. Cooperation & Spatial Distribution
-       r_overlap = -np.clip(factors[7], 0.0, 1.0)
-       r_cluster = -np.clip(factors[9], 0.0, 1.0)
+        # 3. Time Pressure & Idle Penalty (Priority 3)
+        # Constant small penalty per step to discourage wasting time
+        reward -= 0.5
+        # Stronger penalty if completely idle (no coverage, no victims, not charging)
+        is_idle = (new_coverage < 1e-3) and (victims_found == 0) and (charging_state == 0)
+        if is_idle:
+            reward -= 2.0
+        # Time pressure shaping: reward decreases as episode progresses to force speed
+        reward -= episode_progress * 1.5
 
-       # 5. Zone Adherence & Safety
-       r_zone = np.clip(1.0 - factors[10] / 50.0, -1.0, 1.0)
-       r_collision = -np.clip(factors[11], 0.0, 1.0)
+        # 4. Survival & Battery Management (Priority 4)
+        if battery_death:
+            reward -= 50.0
+        # Charging logic
+        if charging_state == 1:
+            if battery < 30.0:
+                reward += 2.0  # Good: charging when low
+            elif battery > 80.0:
+                reward -= 1.5  # Bad: wasting time charging when full
+        # Battery health bonus (normalized to 0-1 range roughly)
+        reward += (battery / 100.0) * 1.0
 
-       # 6. Idle Penalty (Strict Definition)
-       is_idle = (factors[1] == 0.0) and (factors[3] == 0.0) and (factors[5] == 0.0)
-       r_idle = -0.5 if is_idle else 0.0
+        # 5. Cooperation & Spacing (Priority 5 & 6)
+        # Penalize clustering
+        reward -= max(0.0, nearby_teammates - 1.0) * 1.5
+        # Team survival
+        reward -= (4.0 - active_uavs) * 10.0
 
-       # 7. Fixed Step Penalty for Time Efficiency
-       r_step = -0.1
+        # 6. Navigation Shaping (Encourage movement toward targets)
+        # Reward proximity to undiscovered victims
+        reward += np.exp(-dist_to_victim / 15.0) * 2.0
+        # Reward moving to charger when low battery
+        if battery < 30.0:
+            reward += np.exp(-dist_to_charger / 15.0) * 1.5
 
-       # Sum and clip final reward
-       reward = r_coverage + r_new_cov + r_victim_disc + r_victim_dist + \
-                r_battery + r_charging + r_charger_dist + r_death + \
-                r_overlap + r_cluster + r_zone + r_collision + r_idle + r_step
+        # Clip total reward to prevent magnitude explosion and stabilize training
+        reward = np.clip(reward, -15.0, 30.0)
 
-       reward = np.clip(reward, -5.0, 5.0)
-       return float(reward)
+        return float(reward)
