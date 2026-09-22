@@ -1,38 +1,25 @@
-# Core
+# Core scientific stack
 numpy
 scipy
-pandas
 
-# Visualization
-matplotlib
-seaborn
-
-
-
-# Reinforcement Learning (optional but useful)
-gymnasium
-stable-baselines3
-pettingzoo
-polygone
-plotly
+# Reinforcement learning
 torch
-tensorboard
-shapely
 gymnasium
-wandb
-tqdm
-huggingface
-# Utilities
-tqdm
-pyyaml
-huggingface_hub
+pettingzoo
 
-# Image / Video processing
+# Geometry and simulation
+shapely
+
+# Visualization and media
+matplotlib
 opencv-python
 imageio
+pillow
 
-# Scientific / math tools
-scikit-learn
+# Training UX and logging
+tqdm
+ipywidgets
+tensorboard
 
-# Config & CLI
-argparse
+# Experiment artifact storage
+huggingface_hub

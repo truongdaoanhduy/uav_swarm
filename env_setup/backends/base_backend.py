@@ -6,16 +6,10 @@ Allows switching between different physics engines (logic/pybullet/isaac).
 """
 
 from __future__ import annotations
-from typing import Optional
 from abc import ABC, abstractmethod
 from typing import Any
 
 import numpy as np
-
-# ✅ FIX 4.1: REMOVED sys.path hack
-# import sys
-# import os
-# sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 
 class BaseBackend(ABC):

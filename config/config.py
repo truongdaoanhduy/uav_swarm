@@ -6,7 +6,6 @@ from dataclasses import dataclass, field, asdict
 import json
 import numpy as np
 
-# ── FIX: Dùng relative import, XÓA sys.path hack ─────────────────────────────
 from .env import EnvConfig
 from .uav import UAVConfig
 from .sensor import SensorConfig
@@ -14,7 +13,6 @@ from .entity import VictimConfig, ObstacleConfig, DangerZoneConfig
 from .reward import RewardConfig
 from .obs import ObsConfig
 from .train import TrainConfig
-# XÓA: import sys, os, sys.path.append(...)
 
 
 @dataclass
@@ -56,7 +54,7 @@ class AppConfig:
         self.obs.validate()
 
         if self.viz_3d_cfg is None:
-                    self.viz_3d_cfg = {}
+            self.viz_3d_cfg = {}
     # ── Curriculum integration ────────────────────────────────────────────────
 
     def apply_stage(self, stage) -> None:

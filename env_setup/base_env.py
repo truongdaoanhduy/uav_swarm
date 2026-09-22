@@ -1,6 +1,4 @@
-"""
-env/base_env.py - FIXED VERSION
-"""
+"""Core Gymnasium environment for the SAR UAV swarm simulation."""
 from __future__ import annotations
 
 import time
@@ -9,12 +7,8 @@ from typing import Optional
 
 import numpy as np
 
-try:
-    import gymnasium as gym
-    from gymnasium import spaces
-except ImportError:
-    import gymnasium as gym
-    from gymnasium import spaces
+import gymnasium as gym
+from gymnasium import spaces
 
 from config import AppConfig
 from core.map_generator import MapGenerator

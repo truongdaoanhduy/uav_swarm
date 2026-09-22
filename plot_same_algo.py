@@ -3,8 +3,8 @@
 📊 Plot So Sánh các runs (mỗi run = 1 đường riêng biệt)
 
 Usage:
-    python plto_single.py run1/metrics.json run2/metrics.json --save-dir ./plots
-    python plto_single.py masac_llm/metrics.json masac_s42/metrics.json --save-dir ./plots_llm
+    python plot_same_algo.py run1/metrics.json run2/metrics.json --save-dir ./plots
+    python plot_same_algo.py masac_llm/metrics.json masac_s42/metrics.json --save-dir ./plots_llm
 """
 
 import argparse

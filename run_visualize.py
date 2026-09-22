@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from config import AppConfig
-from config.curriculum_config import STAGE_TRANSFER, STAGE_EXTREME
+from config.curriculum_config import STAGE_HARD, STAGE_TRANSFER, STAGE_EXTREME
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -42,8 +42,8 @@ from config.curriculum_config import STAGE_TRANSFER, STAGE_EXTREME
 BASE_OUTPUT_DIR = Path("results/viz")
 
 STAGE_MAP = {
-    "hard":    STAGE_TRANSFER,
-    "extreme": STAGE_EXTREME,
+    "transfer": STAGE_TRANSFER,
+    "extreme":  STAGE_EXTREME,
 }
 
 ALGO_COLORS = {
@@ -390,7 +390,7 @@ def save_summary_plot(
                     mean = np.mean(vals)
                     std  = np.std(vals) if len(vals) > 1 else 0
 
-                    bar = ax.bar(
+                    ax.bar(
                         bar_i, mean,
                         width     = width,
                         color     = ALGO_COLORS.get(algo, "#999"),
@@ -669,7 +669,7 @@ class VizHFUploader:
                     f"GIF {key}",
                 )
                 # Upload vào latest/ (overwrite)
-                ok2 = self.upload(
+                self.upload(
                     str(gif_path),
                     f"visualizations/latest/{key}.gif",
                     f"Latest GIF {key}",

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-import random  # ✅ THÊM import
+import random
 import numpy as np
 
 # ✅ FIX 4.1: REMOVED sys.path hack
@@ -157,13 +157,13 @@ class LogicBackend(BaseBackend):
             1. land > 0.5           → agent muốn land
             2. state == ACTIVE      → chỉ active mới được land
             3. station available    → có station gần
-            4. battery ≤ 60%        → ✅ FIX: chỉ land khi cần (tránh land ở 96%)
+            4. battery ≤ 40%        → landing is only accepted when battery is low
             
         Note:
-            - land=1 nhưng battery > 60% → move bình thường (ignore land)
+            - land=1 nhưng battery > 40% → move bình thường (ignore land)
             - land=1 nhưng không có station → move bình thường
         """
-        # ✅ FIX: Battery threshold để prevent random landing
+        # Landing threshold prevents unnecessary high-battery returns
         LANDING_BATTERY_THRESHOLD = 40.0  # %
         
         for uav in self.uavs:

@@ -8,27 +8,34 @@ __pycache__/
 dist/
 build/
 
-# Virtual env
+# Virtual environments
+.venv/
 venv/
 env/
 .env
-*.json
-# Results (quá nặng, không push)
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Local experiment artifacts
 results/
-# *.pt
+hf_downloads/
+*.json
+*.pt
 *.pth
 *.png
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
 *.gif
-# IDE
+*.log
+*.bak
+
+# Jupyter notebooks
+*.ipynb
+
+# IDE / OS
 .vscode/
 .idea/
-
-# OS
 .DS_Store
 *.swp
-
-# Logs
-*.log

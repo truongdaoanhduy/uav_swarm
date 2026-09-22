@@ -15,10 +15,6 @@ from .curriculum_config import (
     STAGE_TRANSFER,
 )
 
-# ✅ XÓA: sys.path hack không cần thiết và gây bug
-# import sys
-# import os
-# sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 __all__ = [
     "AppConfig",

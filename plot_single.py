@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-📊 Plot So Sánh MAPPO vs MASAC vs MATD3
-Download metrics từ HuggingFace → plot → save
+Plot training metrics from local checkpoints or Hugging Face runs.
 
 Usage:
-    python plot_compare.py
-    python plot_compare.py --runs mappo_s42 masac_s42 matd3_s42
-    python plot_compare.py --local-dir ./downloaded_metrics
-    python plot_compare.py --save-dir ./plots
+    python plot_single.py checkpoint_final.pt --save-dir ./plots
+    python plot_single.py --runs mappo_s42 masac_s42 matd3_s42
+    python plot_single.py --from-local --local-dir ./downloaded_metrics
 """
 
 import argparse
 import json
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from hf_upload import HFDownloader
 
@@ -342,31 +340,6 @@ def plot_all_metrics(
 # ══════════════════════════════════════════════════════════════════════════════
 # CLI
 # ══════════════════════════════════════════════════════════════════════════════
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Plot comparison từ HuggingFace")
-    parser.add_argument(
-        "--runs", nargs="*", default=None,
-        help="Danh sách run_names (mặc định: tất cả runs trên HF)",
-    )
-    parser.add_argument(
-        "--local-dir", type=str, default="./hf_downloads",
-        help="Thư mục lưu file download",
-    )
-    parser.add_argument(
-        "--save-dir", type=str, default="./plots",
-        help="Thư mục lưu plots",
-    )
-    parser.add_argument(
-        "--window", type=int, default=50,
-        help="Smoothing window",
-    )
-    parser.add_argument(
-        "--from-local", action="store_true",
-        help="Đọc metrics từ local (không download lại)",
-    )
-    return parser.parse_args()
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Plot comparison từ HuggingFace")

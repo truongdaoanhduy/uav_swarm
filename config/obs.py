@@ -3,10 +3,7 @@ config/obs.py
 Observation configuration với validation
 """
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from config.env import EnvConfig
 
 
 @dataclass
@@ -18,7 +15,7 @@ class ObsSchemaConfig:
         - SELF: pos(3) + vel(3) + battery(1) + state(4) = 11
         - STATIONS: [rel_pos(2) + dist(1) + occupancy(1)] × n_stations
         - TEAMMATES: [dist(1) + bearing(1) + rel_alt(1)] × 3
-        - OBSTACLES: [rel_pos(2) + dist(1)] × 4
+        - OBSTACLES: [rel_pos(2) + dist(1)] × 8
         - VICTIMS: [rel_pos(2) + urgency(1) + dist(1) + bearing(1)] × 5
         - COVERAGE: local_small(1) + local_large(1) + time_remaining(1) = 3
     
@@ -116,7 +113,7 @@ class ObsConfig:
 
     @property
     def obstacle_dim(self) -> int:
-        """Obstacle observation dimension (4 × 3 = 12)."""
+        """Obstacle observation dimension (8 × 3 = 24)."""
         return self.n_obs_obstacles * self.schema.OBSTACLE_FEATURES_PER
 
     @property
@@ -134,7 +131,7 @@ class ObsConfig:
         """
         Total actor observation dimension.
         
-        Default (n_stations=2): 11 + 8 + 9 + 12 + 25 + 3 = 68
+        Default (n_stations=2): 11 + 8 + 9 + 24 + 25 + 3 = 80
         """
         return (
             self.self_dim +
@@ -155,7 +152,7 @@ class ObsConfig:
         """
         Total critic observation dimension.
         
-        Default: 8 × 68 + 10 = 554
+        Default: 8 × 80 + 10 = 650
         """
         return self.max_uav * self.actor_dim + self.global_dim
 
@@ -175,36 +172,3 @@ class ObsConfig:
     def n_tracked_uavs(self) -> int:
         """DEPRECATED: Use n_tracked_teammates instead."""
         return self.n_tracked_teammates
-    
-    # Trong class DangerZone - thay thế method cũ
-    def get_sensor_modifier(self) -> float:
-        """
-        Camera visibility multiplier khi victim đứng trong zone.
-        
-        Giải thích từng type:
-            smoke:     Khói đặc → camera gần như mù → 0.40
-                    Ví dụ: tòa nhà cháy, khói bốc cao
-            
-            fire:      Lửa + nhiệt → haze + glare → 0.55
-                    Camera thermal vẫn hoạt động nhưng kém
-            
-            gas:       Khí vô hình → không ảnh hưởng visual → 0.85
-                    Chỉ nguy hiểm cho UAV hardware
-            
-            radiation: Vô hình → không ảnh hưởng camera → 0.95
-                    Ảnh hưởng sensors điện tử (nhẹ)
-            
-            collapse:  Bụi đất, không khí mờ → 0.70
-                    Dust cloud từ tòa nhà sập
-        
-        Returns:
-            float: [0.0, 1.0], càng nhỏ càng khó detect
-        """
-        _MODIFIERS = {
-            "smoke":     0.40,
-            "fire":      0.55,
-            "collapse":  0.70,
-            "gas":       0.85,
-            "radiation": 0.95,
-        }
-        return _MODIFIERS.get(self.danger_type, 1.0)
